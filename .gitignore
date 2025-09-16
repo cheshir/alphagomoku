@@ -4,4 +4,6 @@
 .snapshots
 .vscode
 .DS_Store
-
+./checkpoints
+./data
+./runs
