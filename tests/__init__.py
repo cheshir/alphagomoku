@@ -1,0 +1,1 @@
+"""AlphaGomoku test package."""
