@@ -120,6 +120,7 @@ Learning Rate: {args.lr}"""
 • MCTS Simulations: {args.mcts_simulations}
 • Adaptive Sims: {args.adaptive_sims}
 • MCTS Batch Size: {args.batch_size_mcts}
+• Search Difficulty: {args.difficulty} (MCTS + TSS + Endgame)
 • Parallel Workers: {args.parallel_workers}
 • Buffer Max Size: {args.buffer_max_size:,}
 • Map Size: {args.map_size_gb}GB
@@ -157,7 +158,9 @@ def main():
     parser.add_argument('--adaptive-sims', action='store_true', help='Use adaptive simulation scheduling')
     parser.add_argument('--parallel-workers', type=int, default=1, help='Number of parallel selfplay workers')
     parser.add_argument('--batch-size-mcts', type=int, default=32, help='MCTS batch size for neural network evaluation')
-    
+    parser.add_argument('--difficulty', type=str, choices=['easy', 'medium', 'strong'], default='medium',
+                        help='Training difficulty (affects TSS/endgame solver usage)')
+
     args = parser.parse_args()
     
     # Create directories
@@ -183,26 +186,29 @@ def main():
     data_buffer = DataBuffer(buffer_path, max_size=args.buffer_max_size, map_size=map_size)
     print(f"Data buffer: max_size={args.buffer_max_size:,}, map_size={args.map_size_gb}GB")
     
-    # Initialize self-play worker
+    # Initialize self-play worker with unified search
     if args.parallel_workers > 1:
         selfplay_worker = ParallelSelfPlay(
-            model=model, 
+            model=model,
             mcts_simulations=args.mcts_simulations,
             adaptive_sims=args.adaptive_sims,
             batch_size=args.batch_size_mcts,
-            num_workers=args.parallel_workers
+            num_workers=args.parallel_workers,
+            difficulty=args.difficulty
         )
         print(f"Parallel selfplay: {args.parallel_workers} workers")
     else:
         selfplay_worker = SelfPlayWorker(
-            model=model, 
+            model=model,
             mcts_simulations=args.mcts_simulations,
             adaptive_sims=args.adaptive_sims,
-            batch_size=args.batch_size_mcts
+            batch_size=args.batch_size_mcts,
+            difficulty=args.difficulty
         )
     
     print(f"MCTS simulations: {args.mcts_simulations} (adaptive: {args.adaptive_sims})")
     print(f"MCTS batch size: {args.batch_size_mcts}")
+    print(f"Unified search difficulty: {args.difficulty} (includes MCTS + TSS + Endgame solver)")
     
     start_epoch = 0
     training_history = {'loss': [], 'policy_acc': [], 'value_mae': [], 'epoch_times': []}
