@@ -1,4 +1,5 @@
 import math
+import threading
 from collections import deque
 from typing import Dict, List, Optional, Tuple
 
@@ -41,6 +42,7 @@ class MCTSNode:
         self.children: Dict[int, "MCTSNode"] = {}
         self.is_expanded = False
         self.in_flight = False  # virtual loss marker for batching
+        self._lock = threading.Lock()  # Protect node state updates
 
     def is_leaf(self) -> bool:
         return len(self.children) == 0
@@ -57,16 +59,17 @@ class MCTSNode:
         virtual_loss_penalty: float = -1e9,
     ) -> float:
         """Upper Confidence Bound for Trees with prior"""
-        q = self.value()
-        u = (
-            cpuct
-            * self.prior
-            * math.sqrt(max(1, parent_visits))
-            / (1 + self.visit_count)
-        )
-        if self.in_flight:
-            return virtual_loss_penalty
-        return q + u
+        with self._lock:
+            q = self.value()
+            u = (
+                cpuct
+                * self.prior
+                * math.sqrt(max(1, parent_visits))
+                / (1 + self.visit_count)
+            )
+            if self.in_flight:
+                return virtual_loss_penalty
+            return q + u
 
     def select_child(
         self, cpuct: float, virtual_loss_penalty: float = -1e9
@@ -97,8 +100,19 @@ class MCTSNode:
 
     def backup(self, value: float):
         """Accumulate value to this node only (no recursion)."""
-        self.visit_count += 1
-        self.value_sum += value
+        with self._lock:
+            self.visit_count += 1
+            self.value_sum += value
+
+    def set_in_flight(self, value: bool):
+        """Thread-safe setter for in_flight flag."""
+        with self._lock:
+            self.in_flight = value
+
+    def is_in_flight(self) -> bool:
+        """Thread-safe getter for in_flight flag."""
+        with self._lock:
+            return self.in_flight
 
 
 class MCTS:
@@ -254,7 +268,7 @@ class MCTS:
             path.append(node)
 
         # Mark in-flight to reduce duplicate selection within this batch
-        node.in_flight = True
+        node.set_in_flight(True)
 
         terminal, winner = self._is_terminal(
             node.state, node.last_move, self.env.board_size
@@ -282,7 +296,7 @@ class MCTS:
         for n in reversed(path):
             n.backup(v)
             v = -v
-        node.in_flight = False
+        node.set_in_flight(False)
 
     def _process_batch_leaves(
         self, leaves: List[Tuple[MCTSNode, List[MCTSNode]]]
@@ -325,7 +339,7 @@ class MCTS:
             n.backup(v)
             v = -v
 
-        node.in_flight = False
+        node.set_in_flight(False)
 
     def _evaluate_node(self, node: MCTSNode) -> Tuple[np.ndarray, float]:
         """Evaluate a node with the neural network and mask illegal moves."""
