@@ -12,3 +12,7 @@ __pycache__/
 checkpoints/
 data/
 runs/
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
