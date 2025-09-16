@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from ..env.gomoku_env import GomokuEnv
 from ..mcts.mcts import MCTS
 from ..mcts.adaptive import AdaptiveSimulator
+from ..search import UnifiedSearch
 
 
 @dataclass
@@ -17,15 +18,20 @@ class SelfPlayData:
 
 class SelfPlayWorker:
     """Generates self-play training data"""
-    
-    def __init__(self, model, board_size: int = 15, mcts_simulations: int = 800, 
-                 adaptive_sims: bool = True, batch_size: int = 64):
+
+    def __init__(self, model, board_size: int = 15, mcts_simulations: int = 800,
+                 adaptive_sims: bool = True, batch_size: int = 64, difficulty: str = 'medium'):
         self.model = model
         self.board_size = board_size
         self.mcts_simulations = mcts_simulations
         self.adaptive_sims = adaptive_sims
+        self.difficulty = difficulty
         self.env = GomokuEnv(board_size)
-        self.mcts = MCTS(model, self.env, num_simulations=mcts_simulations, batch_size=batch_size)
+
+        # Use UnifiedSearch instead of plain MCTS for tactical training
+        self.search = UnifiedSearch(model, self.env, difficulty=difficulty)
+        # Keep reference to MCTS for adaptive simulations
+        self.mcts = self.search.mcts
         self.adaptive_simulator = AdaptiveSimulator() if adaptive_sims else None
     
     def generate_game(self, temperature_moves: int = 8) -> List[SelfPlayData]:
@@ -44,10 +50,13 @@ class SelfPlayWorker:
                 sims = self.adaptive_simulator.get_simulations(move_count, self.env.board)
                 self.mcts.num_simulations = sims
             
-            # Run MCTS to get policy
+            # Run unified search (MCTS + TSS + Endgame) to get policy
             temperature = 1.0 if move_count < temperature_moves else 0.0
             reuse_tree = move_count > 0  # Reuse tree after first move
-            policy, _ = self.mcts.search(self.env.board, temperature, reuse_tree)
+
+            # Use unified search for enhanced tactical play
+            search_result = self.search.search(self.env.board, temperature, reuse_tree)
+            policy = search_result.action_probs
             
             # Store training example (value will be filled after game ends)
             game_data.append(SelfPlayData(
@@ -62,8 +71,8 @@ class SelfPlayWorker:
             else:
                 action = np.argmax(policy)
             
-            # Reuse subtree for next search
-            self.mcts.reuse_subtree(action)
+            # Reuse subtree for next search (unified search delegates to MCTS)
+            self.search.reuse_subtree(action)
             
             self.env.step(action)
             move_count += 1
