@@ -4,6 +4,11 @@
 .snapshots
 .vscode
 .DS_Store
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
 checkpoints/
 data/
 runs/
