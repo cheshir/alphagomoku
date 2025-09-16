@@ -3,9 +3,6 @@
 import multiprocessing as mp
 from typing import List
 
-import numpy as np
-import torch
-
 from .selfplay import SelfPlayData, SelfPlayWorker
 
 

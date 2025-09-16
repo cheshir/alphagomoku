@@ -25,7 +25,7 @@ def test_training_pipeline():
     
     # Test self-play
     print("\n1. Testing self-play...")
-    selfplay_worker = SelfPlayWorker(model, num_simulations=50)  # Fewer sims for testing
+    selfplay_worker = SelfPlayWorker(model, mcts_simulations=50)  # Fewer sims for testing
     game_data = selfplay_worker.generate_game()
     print(f"Generated {len(game_data)} training examples from one game")
     

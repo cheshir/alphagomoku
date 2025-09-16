@@ -4,6 +4,7 @@ import numpy as np
 
 from ..env.gomoku_env import GomokuEnv
 from ..mcts.mcts import MCTS
+from ..mcts.config import MCTSConfig
 
 
 class Evaluator:
@@ -18,8 +19,10 @@ class Evaluator:
         """Play a single game between two MCTS configurations"""
         self.env.reset()
 
-        mcts1 = MCTS(self.model, self.env, num_simulations=player1_sims)
-        mcts2 = MCTS(self.model, self.env, num_simulations=player2_sims)
+        config1 = MCTSConfig(num_simulations=player1_sims)
+        config2 = MCTSConfig(num_simulations=player2_sims)
+        mcts1 = MCTS(self.model, self.env, config1)
+        mcts2 = MCTS(self.model, self.env, config2)
 
         move_count = 0
         while not self.env.game_over:
@@ -83,7 +86,8 @@ class Evaluator:
         correct = 0
         total = len(positions)
 
-        mcts = MCTS(self.model, self.env, num_simulations=800)
+        config = MCTSConfig(num_simulations=800)
+        mcts = MCTS(self.model, self.env, config)
 
         for board, expected_move in positions:
             policy, _ = mcts.search(board, temperature=0.0)

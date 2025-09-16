@@ -5,6 +5,7 @@ from typing import Tuple, Optional, Dict, Any
 from dataclasses import dataclass
 
 from ..mcts.mcts import MCTS
+from ..mcts.config import MCTSConfig
 from ..tss import tss_search, Position as TSSPosition
 from ..endgame import endgame_search, EndgamePosition, should_use_endgame_solver
 from ..env.gomoku_env import GomokuEnv
@@ -40,13 +41,12 @@ class UnifiedSearch:
         # Initialize search components based on difficulty
         config = self._get_difficulty_config(difficulty)
 
-        self.mcts = MCTS(
-            model=model,
-            env=env,
-            cpuct=config['cpuct'],
+        mcts_config = MCTSConfig(
             num_simulations=config['mcts_sims'],
+            cpuct=config['cpuct'],
             batch_size=config.get('batch_size', 32)
         )
+        self.mcts = MCTS(model=model, env=env, config=mcts_config)
 
         self.tss_config = config['tss']
         self.endgame_config = config['endgame']
@@ -147,7 +147,7 @@ class UnifiedSearch:
                 }
             },
             'medium': {
-                'mcts_sims': 384,
+                'mcts_sims': 400,
                 'cpuct': 1.8,
                 'tss': {
                     'enabled': True,

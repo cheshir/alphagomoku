@@ -6,14 +6,15 @@ train:
 	python scripts/train.py \
  		--epochs 5 \
  		--selfplay-games 200 \
- 		--batch-size 1024 \
- 		--lr 0.01 \
  		--mcts-simulations 800 \
+ 		--batch-size 1024 \
+ 		--lr 0.001 \
  		--map-size-gb 32 \
  		--buffer-max-size 400000 \
  		--batch-size-mcts 256 \
  		--parallel-workers 8 \
  		--adaptive-sims \
+ 		--difficulty medium \
  		--resume auto
 
 train-fast:
@@ -22,12 +23,13 @@ train-fast:
 	python scripts/train.py \
  		--epochs 5 \
  		--selfplay-games 100 \
+ 		--mcts-simulations 400 \
  		--batch-size 1024 \
  		--lr 0.01 \
- 		--mcts-simulations 400 \
  		--map-size-gb 16 \
  		--buffer-max-size 300000 \
  		--batch-size-mcts 256 \
  		--parallel-workers 8 \
  		--adaptive-sims \
+ 		--difficulty medium \
  		--resume auto

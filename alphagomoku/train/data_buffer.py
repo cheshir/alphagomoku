@@ -197,20 +197,37 @@ class DataBuffer:
                 key = f"data_{idx}".encode()
                 value = txn.get(key)
                 if value:
+                    loaded_data = pickle.loads(value)
                     if self.lazy_augmentation:
                         # Unpack stored data and apply random augmentation
-                        example, _ = pickle.loads(value)
+                        if isinstance(loaded_data, tuple):
+                            example, _ = loaded_data
+                        else:
+                            example = loaded_data
                         # Apply random augmentation (0-7) on-the-fly
                         aug_idx = np.random.randint(0, 8)
                         augmented_example = self._apply_single_augmentation(example, aug_idx)
                         batch.append(augmented_example)
                     else:
-                        batch.append(pickle.loads(value))
+                        batch.append(loaded_data)
 
         return batch
 
+    def sample(self, batch_size: int) -> List[SelfPlayData]:
+        """Alias for sample_batch for backward compatibility"""
+        return self.sample_batch(batch_size)
+
     def __len__(self) -> int:
         return self.size
+
+    def get_stats(self) -> dict:
+        """Get buffer statistics"""
+        return {
+            'size': self.size,
+            'max_size': self.max_size,
+            'write_idx': self.write_idx,
+            'utilization': self.size / self.max_size if self.max_size > 0 else 0.0
+        }
 
     def close(self):
         """Properly close LMDB environment and free resources"""

@@ -55,7 +55,8 @@ class GomokuEnv(gym.Env):
         row, col = divmod(action, self.board_size)
 
         if self.board[row, col] != 0:
-            # Invalid move
+            # Invalid move - terminate game
+            self.game_over = True
             return self._get_observation(), -1.0, True, False, {"invalid_move": True}
 
         # Make move
@@ -131,6 +132,11 @@ class GomokuEnv(gym.Env):
     def get_legal_actions(self) -> np.ndarray:
         """Get list of legal action indices"""
         return np.where(self._get_action_mask())[0]
+
+    @property
+    def terminated(self) -> bool:
+        """Check if game is terminated (for test compatibility)"""
+        return self.game_over
 
     def render(self, mode: str = "human") -> Optional[str]:
         """Render the board state"""

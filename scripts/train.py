@@ -151,7 +151,7 @@ def main():
     parser.add_argument('--lr', type=float, default=0.001, help='Learning rate')
     parser.add_argument('--epochs', type=int, default=100, help='Number of epochs')
     parser.add_argument('--selfplay-games', type=int, default=100, help='Self-play games per iteration')
-    parser.add_argument('--mcts-simulations', type=int, default=800, help='MCTS simulations per move')
+    parser.add_argument('--mcts-simulations', type=int, default=100, help='MCTS simulations per move')
     parser.add_argument('--map-size-gb', type=int, default=8, help='LMDB map size in GB')
     parser.add_argument('--buffer-max-size', type=int, default=2_000_000, help='Maximum buffer size (positions)')
     parser.add_argument('--resume', type=str, help='Resume from checkpoint (use "auto" for latest)')
@@ -266,11 +266,10 @@ def main():
                   f"Value MAE: {metrics['value_mae']:.3f}")
             print(f"   LR: {metrics['lr']:.6f} | Time: {train_time:.1f}s")
         
-        # Save checkpoint
-        if epoch % 10 == 0 or epoch == args.epochs - 1:
-            checkpoint_path = os.path.join(args.checkpoint_dir, f'model_epoch_{epoch}.pt')
-            trainer.save_checkpoint(checkpoint_path, epoch, metrics)
-            print(f"\n💾 Saved checkpoint: {checkpoint_path}")
+        # Save checkpoint every epoch
+        checkpoint_path = os.path.join(args.checkpoint_dir, f'model_epoch_{epoch}.pt')
+        trainer.save_checkpoint(checkpoint_path, epoch, metrics)
+        print(f"\n💾 Saved checkpoint: {checkpoint_path}")
         
         epoch_time = time.time() - epoch_start
         print(f"\n⏱️  Epoch completed in {epoch_time:.1f}s")

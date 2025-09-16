@@ -8,6 +8,7 @@ import shutil
 from alphagomoku.env.gomoku_env import GomokuEnv
 from alphagomoku.model.network import GomokuNet
 from alphagomoku.mcts.mcts import MCTS
+from alphagomoku.mcts.config import MCTSConfig
 from alphagomoku.train.trainer import Trainer
 from alphagomoku.train.data_buffer import DataBuffer
 
@@ -50,13 +51,15 @@ def medium_env():
 @pytest.fixture
 def small_mcts(small_model, small_env):
     """Small MCTS configuration for fast testing."""
-    return MCTS(small_model, small_env, num_simulations=5)
+    config = MCTSConfig(num_simulations=5)
+    return MCTS(small_model, small_env, config)
 
 
 @pytest.fixture
 def medium_mcts(medium_model, medium_env):
     """Medium MCTS configuration for realistic testing."""
-    return MCTS(medium_model, medium_env, num_simulations=20)
+    config = MCTSConfig(num_simulations=20)
+    return MCTS(medium_model, medium_env, config)
 
 
 @pytest.fixture
@@ -86,22 +89,26 @@ def data_buffer_small(temp_data_dir):
 
 
 @pytest.fixture
+def temp_db_path(temp_data_dir):
+    """Temporary database path for testing."""
+    return temp_data_dir
+
+
+@pytest.fixture
 def sample_training_data():
     """Sample training data for tests."""
     from alphagomoku.selfplay.selfplay import SelfPlayData
 
     data = []
     for i in range(10):
-        state = np.random.randint(-1, 2, (9, 9)).astype(np.int8)
+        state = np.random.rand(5, 9, 9).astype(np.float32)  # 5 channels
         policy = np.random.rand(81)
         policy = policy / np.sum(policy)
 
         data.append(SelfPlayData(
             state=state,
             policy=policy,
-            value=np.random.rand() * 2 - 1,
-            current_player=1 if i % 2 == 0 else -1,
-            last_move=(i % 9, (i + 1) % 9)
+            value=np.random.rand() * 2 - 1
         ))
 
     return data
