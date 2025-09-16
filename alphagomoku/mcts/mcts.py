@@ -223,14 +223,16 @@ class MCTS:
             v = -v
 
     def _simulate_batched(self):
-        """Run simulations in batches, sharing NN evaluations."""
+        """Run simulations in batches, sharing NN evaluations with optimized device transfers."""
         sims_done = 0
+        device = next(self.model.parameters()).device
+
         while sims_done < self.config.num_simulations:
             leaves = self._collect_leaves_for_batch(sims_done)
             if not leaves:
                 continue
 
-            sims_done += self._process_batch_leaves(leaves)
+            sims_done += self._process_batch_leaves_optimized(leaves, device)
 
     def _collect_leaves_for_batch(
         self, sims_done: int
@@ -298,18 +300,46 @@ class MCTS:
             v = -v
         node.set_in_flight(False)
 
-    def _process_batch_leaves(
-        self, leaves: List[Tuple[MCTSNode, List[MCTSNode]]]
+    def _process_batch_leaves_optimized(
+        self, leaves: List[Tuple[MCTSNode, List[MCTSNode]]], device: torch.device
     ) -> int:
-        """Process a batch of leaves through neural network evaluation."""
-        # Batch evaluate leaves
-        states = [self._state_to_tensor_from_node(node) for node, _ in leaves]
-        batch_states = torch.stack(states)
+        """Process a batch of leaves with optimized device transfers."""
+        # Batch convert states to tensors and transfer to device once
+        batch_states_np = []
+        legal_masks_np = []
+
+        for node, _ in leaves:
+            # Convert to numpy first (faster than individual tensor conversions)
+            state_np = self._state_to_numpy_from_node(node)
+            batch_states_np.append(state_np)
+            legal_masks_np.append((node.state.reshape(-1) == 0).astype(np.float32))
+
+        # Single device transfer for entire batch
+        batch_states = torch.from_numpy(np.stack(batch_states_np)).float().to(device)
+        legal_masks = torch.from_numpy(np.stack(legal_masks_np)).to(device)
+
         policies_t, values_t = self.model.predict_batch(batch_states)
 
         # Apply legal masks and normalize per leaf, then expand and backup
         for i, (node, path) in enumerate(leaves):
-            self._process_single_leaf_result(node, path, policies_t[i], values_t[i])
+            policy = policies_t[i]
+            legal_mask = legal_masks[i]
+            policy = policy * legal_mask
+            policy = policy / (policy.sum() + self.config.policy_epsilon)
+
+            value = float(values_t[i].item())
+
+            if not node.is_expanded:
+                node.expand(policy.detach().cpu().numpy())
+
+            # Backup along path
+            v = value
+            for n in reversed(path):
+                n.backup(v)
+                v = -v
+
+            # Use thread-safe method to clear in_flight flag
+            node.set_in_flight(False)
 
         return len(leaves)
 
@@ -340,17 +370,19 @@ class MCTS:
             v = -v
 
         node.set_in_flight(False)
-
     def _evaluate_node(self, node: MCTSNode) -> Tuple[np.ndarray, float]:
         """Evaluate a node with the neural network and mask illegal moves."""
-        state_tensor = self._state_to_tensor_from_node(node)
+        device = next(self.model.parameters()).device
+
+        # Convert to numpy first, then create single tensor on device
+        state_np = self._state_to_numpy_from_node(node)
+        state_tensor = torch.from_numpy(state_np).float().to(device)
+
         policy_t, value = self.model.predict(state_tensor)
 
-        # Mask illegal actions on-device
-        legal_mask_np = node.state.reshape(-1) == 0
-        legal_mask = torch.from_numpy(legal_mask_np).to(
-            policy_t.device, dtype=policy_t.dtype
-        )
+        # Create legal mask on device directly
+        legal_mask_np = (node.state.reshape(-1) == 0).astype(np.float32)
+        legal_mask = torch.from_numpy(legal_mask_np).to(device)
 
         policy_t = policy_t * legal_mask
         policy_t = policy_t / (policy_t.sum() + self.config.policy_epsilon)
@@ -369,8 +401,8 @@ class MCTS:
             # No subtree to reuse
             self.root = None
 
-    def _state_to_tensor_from_node(self, node: MCTSNode) -> torch.Tensor:
-        """Convert node state to NN input tensor."""
+    def _state_to_numpy_from_node(self, node: MCTSNode) -> np.ndarray:
+        """Convert node state to numpy array for faster batch processing."""
         board_size = node.board_size
 
         own_stones = (node.state == node.current_player).astype(np.float32)
@@ -384,10 +416,13 @@ class MCTS:
         side_to_move = np.ones((board_size, board_size), dtype=np.float32)
         pattern_maps = np.zeros((board_size, board_size), dtype=np.float32)
 
-        state = np.stack(
+        return np.stack(
             [own_stones, opp_stones, last_move, side_to_move, pattern_maps]
         )
-        return torch.from_numpy(state).float()
+
+    def _state_to_tensor_from_node(self, node: MCTSNode) -> torch.Tensor:
+        """Convert node state to NN input tensor."""
+        return torch.from_numpy(self._state_to_numpy_from_node(node)).float()
 
     def _is_terminal(
         self, state: np.ndarray, last_move: Tuple[int, int], board_size: int

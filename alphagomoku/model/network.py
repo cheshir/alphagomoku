@@ -137,25 +137,25 @@ class GomokuNet(nn.Module):
         return policy, value.squeeze(-1)
 
     def predict(self, board_state: torch.Tensor) -> Tuple[torch.Tensor, float]:
-        """Single prediction for MCTS"""
+        """Single prediction for MCTS with optimized tensor handling"""
         self.eval()
         with torch.inference_mode():
-            # Move input to same device as model
-            device = next(self.parameters()).device
-            board_state = board_state.to(device)
-            policy_logits, value = self.forward(board_state.unsqueeze(0))
+            # Assume board_state is already on the correct device (handled by caller)
+            # Add batch dimension only if needed
+            if board_state.dim() == 3:
+                board_state = board_state.unsqueeze(0)
+
+            policy_logits, value = self.forward(board_state)
             policy = F.softmax(policy_logits, dim=1).squeeze(0)
             return policy, value.item()
 
     def predict_batch(
         self, board_states: torch.Tensor
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Batch prediction for MCTS"""
+        """Batch prediction for MCTS with optimized tensor handling"""
         self.eval()
         with torch.inference_mode():
-            # Move input to same device as model
-            device = next(self.parameters()).device
-            board_states = board_states.to(device)
+            # Assume board_states is already on the correct device (handled by caller)
             policy_logits, values = self.forward(board_states)
             policies = F.softmax(policy_logits, dim=1)
             return policies, values
