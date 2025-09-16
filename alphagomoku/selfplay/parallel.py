@@ -8,7 +8,7 @@ from .selfplay import SelfPlayWorker, SelfPlayData
 
 
 def worker_process(model_state_dict, board_size, mcts_simulations, adaptive_sims,
-                  batch_size, num_games, worker_id):
+                  batch_size, num_games, worker_id, difficulty='medium'):
     """Worker process for parallel self-play"""
     # Recreate model in worker process
     from ..model.network import GomokuNet
@@ -20,13 +20,14 @@ def worker_process(model_state_dict, board_size, mcts_simulations, adaptive_sims
                            for k, v in model_state_dict.items()})
     model.eval()
     
-    # Create worker
+    # Create worker with unified search support
     worker = SelfPlayWorker(
         model=model,
-        board_size=board_size, 
+        board_size=board_size,
         mcts_simulations=mcts_simulations,
         adaptive_sims=adaptive_sims,
-        batch_size=batch_size
+        batch_size=batch_size,
+        difficulty=difficulty
     )
     
     # Generate games
@@ -41,13 +42,15 @@ def worker_process(model_state_dict, board_size, mcts_simulations, adaptive_sims
 
 class ParallelSelfPlay:
     """Parallel self-play data generation"""
-    
+
     def __init__(self, model, board_size: int = 15, mcts_simulations: int = 800,
-                 adaptive_sims: bool = True, batch_size: int = 32, num_workers: int = None):
+                 adaptive_sims: bool = True, batch_size: int = 32, num_workers: int = None,
+                 difficulty: str = 'medium'):
         self.model = model
         self.board_size = board_size
         self.mcts_simulations = mcts_simulations
         self.adaptive_sims = adaptive_sims
+        self.difficulty = difficulty
         self.batch_size = batch_size
         self.num_workers = num_workers or mp.cpu_count()
     
@@ -70,7 +73,8 @@ class ParallelSelfPlay:
                     self.adaptive_sims,
                     self.batch_size,
                     worker_games,
-                    i
+                    i,
+                    self.difficulty
                 ))
         
         # Prepare CPU-only state dict to avoid sharing MPS/CUDA storages
@@ -88,7 +92,7 @@ class ParallelSelfPlay:
             # But our worker expects state first; rebuild tuples accordingly
             worker_args = []
             for args in worker_args_with_state:
-                # args currently: (cpu_state, board_size, mcts_simulations, adaptive_sims, batch_size, worker_games, i)
+                # args currently: (cpu_state, board_size, mcts_simulations, adaptive_sims, batch_size, worker_games, i, difficulty)
                 worker_args.append(args)
 
             results = pool.starmap(worker_process, worker_args)
