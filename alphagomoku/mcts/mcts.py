@@ -1,35 +1,46 @@
 import math
+from collections import deque
+from typing import Dict, List, Optional, Tuple
+
 import numpy as np
 import torch
-from typing import Dict, List, Optional, Tuple
-from collections import deque
+
 from ..env.gomoku_env import GomokuEnv
 
 
 class MCTSNode:
     """MCTS tree node"""
 
-    def __init__(self, state: np.ndarray, parent: Optional['MCTSNode'] = None,
-                 action: Optional[int] = None, prior: float = 0.0,
-                 current_player: Optional[int] = None,
-                 last_move: Optional[Tuple[int, int]] = None,
-                 board_size: Optional[int] = None):
+    def __init__(
+        self,
+        state: np.ndarray,
+        parent: Optional["MCTSNode"] = None,
+        action: Optional[int] = None,
+        prior: float = 0.0,
+        current_player: Optional[int] = None,
+        last_move: Optional[Tuple[int, int]] = None,
+        board_size: Optional[int] = None,
+    ):
         self.state = state.copy()
         self.parent = parent
         self.action = action
         self.prior = prior
 
         stones = int(np.sum(self.state != 0))
-        self.current_player = current_player if current_player is not None else (1 if stones % 2 == 0 else -1)
+        self.current_player = (
+            current_player
+            if current_player is not None
+            else (1 if stones % 2 == 0 else -1)
+        )
         self.last_move = last_move if last_move is not None else (-1, -1)
         self.board_size = board_size
 
         self.visit_count = 0
         self.value_sum = 0.0
-        self.children: Dict[int, 'MCTSNode'] = {}
+        self.children: Dict[int, "MCTSNode"] = {}
         self.is_expanded = False
         self.in_flight = False  # virtual loss marker for batching
-    
+
     def is_leaf(self) -> bool:
         return len(self.children) == 0
 
@@ -41,15 +52,22 @@ class MCTSNode:
     def uct_score(self, cpuct: float, parent_visits: int) -> float:
         """Upper Confidence Bound for Trees with prior"""
         q = self.value()
-        u = cpuct * self.prior * math.sqrt(max(1, parent_visits)) / (1 + self.visit_count)
+        u = (
+            cpuct
+            * self.prior
+            * math.sqrt(max(1, parent_visits))
+            / (1 + self.visit_count)
+        )
         if self.in_flight:
             return -1e9
         return q + u
 
-    def select_child(self, cpuct: float) -> 'MCTSNode':
+    def select_child(self, cpuct: float) -> "MCTSNode":
         """Select child with highest UCT score"""
-        return max(self.children.values(),
-                  key=lambda child: child.uct_score(cpuct, self.visit_count))
+        return max(
+            self.children.values(),
+            key=lambda child: child.uct_score(cpuct, self.visit_count),
+        )
 
     def expand(self, policy: np.ndarray):
         """Expand node with children for legal actions"""
@@ -66,10 +84,8 @@ class MCTSNode:
                 prior=float(policy[action]),
                 current_player=-self.current_player,
                 last_move=(r, c),
-                board_size=self.board_size
+                board_size=self.board_size,
             )
-
-
 
     def backup(self, value: float):
         """Accumulate value to this node only (no recursion)."""
@@ -80,8 +96,14 @@ class MCTSNode:
 class MCTS:
     """Monte Carlo Tree Search with neural network guidance"""
 
-    def __init__(self, model, env: GomokuEnv, cpuct: float = 1.8,
-                 num_simulations: int = 800, batch_size: int = 32):
+    def __init__(
+        self,
+        model,
+        env: GomokuEnv,
+        cpuct: float = 1.8,
+        num_simulations: int = 800,
+        batch_size: int = 32,
+    ):
         self.model = model
         self.env = env
         self.cpuct = cpuct
@@ -94,7 +116,9 @@ class MCTS:
         self.eval_queue = deque()
         self.eval_results = {}
 
-    def search(self, state: np.ndarray, temperature: float = 1.0, reuse_tree: bool = False) -> Tuple[np.ndarray, np.ndarray]:
+    def search(
+        self, state: np.ndarray, temperature: float = 1.0, reuse_tree: bool = False
+    ) -> Tuple[np.ndarray, np.ndarray]:
         """Run MCTS and return action probabilities and visit counts"""
         # Create or reuse root node
         if not reuse_tree or self.root is None:
@@ -147,7 +171,9 @@ class MCTS:
             path.append(node)
 
         # Terminal check
-        terminal, winner = self._is_terminal(node.state, node.last_move, self.env.board_size)
+        terminal, winner = self._is_terminal(
+            node.state, node.last_move, self.env.board_size
+        )
         if terminal:
             if winner == 0:
                 value = 0.0
@@ -174,7 +200,9 @@ class MCTS:
             leaves: List[Tuple[MCTSNode, List[MCTSNode]]] = []
 
             # Collect up to batch_size leaves
-            while len(leaves) < self.batch_size and (sims_done + len(leaves) < self.num_simulations):
+            while len(leaves) < self.batch_size and (
+                sims_done + len(leaves) < self.num_simulations
+            ):
                 node = self.root
                 path = [node]
 
@@ -186,7 +214,9 @@ class MCTS:
                 # Mark in-flight to reduce duplicate selection within this batch
                 node.in_flight = True
 
-                terminal, winner = self._is_terminal(node.state, node.last_move, self.env.board_size)
+                terminal, winner = self._is_terminal(
+                    node.state, node.last_move, self.env.board_size
+                )
                 if terminal:
                     # Immediate backup; no NN eval needed
                     if winner == 0:
@@ -277,32 +307,34 @@ class MCTS:
         else:
             # No subtree to reuse
             self.root = None
-    
+
     def _state_to_tensor(self, env: GomokuEnv) -> torch.Tensor:
         """Convert environment state to neural network input tensor (legacy)."""
         board_size = env.board_size
-        
+
         # Channel 0: Current player's stones
         own_stones = (env.board == env.current_player).astype(np.float32)
-        
-        # Channel 1: Opponent's stones  
+
+        # Channel 1: Opponent's stones
         opp_stones = (env.board == -env.current_player).astype(np.float32)
-        
+
         # Channel 2: Last move
         last_move = np.zeros((board_size, board_size), dtype=np.float32)
         if env.last_move[0] >= 0:
             last_move[env.last_move[0], env.last_move[1]] = 1.0
-        
+
         # Channel 3: Side to move (1 for current player)
         side_to_move = np.ones((board_size, board_size), dtype=np.float32)
-        
+
         # Channel 4: Pattern maps (simplified - can be enhanced later)
         pattern_maps = np.zeros((board_size, board_size), dtype=np.float32)
-        
+
         # Stack channels
-        state = np.stack([own_stones, opp_stones, last_move, side_to_move, pattern_maps])
+        state = np.stack(
+            [own_stones, opp_stones, last_move, side_to_move, pattern_maps]
+        )
         return torch.FloatTensor(state)
-    
+
     def _create_env_from_state(self, state: np.ndarray) -> GomokuEnv:
         """Legacy helper (kept for compatibility); not used in new batching."""
         env = GomokuEnv(board_size=self.env.board_size)
@@ -320,21 +352,26 @@ class MCTS:
         opp_stones = (node.state == -node.current_player).astype(np.float32)
 
         last_move = np.zeros((board_size, board_size), dtype=np.float32)
-        lr, lc = node.last_move
-        if lr is not None and lr >= 0:
-            last_move[lr, lc] = 1.0
+        if node.last_move is not None:
+            lr, lc = node.last_move
+            if lr is not None and lr >= 0:
+                last_move[lr, lc] = 1.0
 
         side_to_move = np.ones((board_size, board_size), dtype=np.float32)
         pattern_maps = np.zeros((board_size, board_size), dtype=np.float32)
 
-        return np.stack([own_stones, opp_stones, last_move, side_to_move, pattern_maps])
+        return np.stack(
+            [own_stones, opp_stones, last_move, side_to_move, pattern_maps]
+        )
 
     def _state_to_tensor_from_node(self, node: MCTSNode) -> torch.Tensor:
         """Convert node state to NN input tensor."""
         return torch.from_numpy(self._state_to_numpy_from_node(node)).float()
 
     @staticmethod
-    def _is_terminal(state: np.ndarray, last_move: Tuple[int, int], board_size: int) -> Tuple[bool, int]:
+    def _is_terminal(
+        state: np.ndarray, last_move: Tuple[int, int], board_size: int
+    ) -> Tuple[bool, int]:
         """Check terminal condition using last move.
         Returns (terminal, winner), where winner in {-1, 0, 1}.
         """
@@ -355,12 +392,20 @@ class MCTS:
         for dr, dc in directions:
             count = 1
             rr, cc = r + dr, c + dc
-            while 0 <= rr < board_size and 0 <= cc < board_size and state[rr, cc] == player:
+            while (
+                0 <= rr < board_size
+                and 0 <= cc < board_size
+                and state[rr, cc] == player
+            ):
                 count += 1
                 rr += dr
                 cc += dc
             rr, cc = r - dr, c - dc
-            while 0 <= rr < board_size and 0 <= cc < board_size and state[rr, cc] == player:
+            while (
+                0 <= rr < board_size
+                and 0 <= cc < board_size
+                and state[rr, cc] == player
+            ):
                 count += 1
                 rr -= dr
                 cc -= dc

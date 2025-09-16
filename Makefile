@@ -25,7 +25,7 @@ train-fast:
  		--batch-size 1024 \
  		--lr 0.01 \
  		--mcts-simulations 400 \
- 		--map-size-gb 8 \
+ 		--map-size-gb 16 \
  		--buffer-max-size 300000 \
  		--batch-size-mcts 256 \
  		--parallel-workers 8 \

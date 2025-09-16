@@ -1,16 +1,23 @@
-import numpy as np
-import lmdb
-import pickle
 import os
-from typing import List, Iterator, Tuple
+import pickle
+from typing import Iterator, List, Tuple
+
+import lmdb
+import numpy as np
+
 from ..selfplay.selfplay import SelfPlayData
 
 
 class DataBuffer:
     """LMDB-backed replay buffer with lazy augmentation for reduced memory overhead"""
 
-    def __init__(self, db_path: str, max_size: int = 5_000_000, map_size: int = 64 * 1024**3,
-                 lazy_augmentation: bool = True):
+    def __init__(
+        self,
+        db_path: str,
+        max_size: int = 5_000_000,
+        map_size: int = 64 * 1024**3,
+        lazy_augmentation: bool = True,
+    ):
         self.db_path = db_path
         self.max_size = max_size
         self.lazy_augmentation = lazy_augmentation
@@ -20,11 +27,11 @@ class DataBuffer:
 
         # Load existing size
         with self.env.begin() as txn:
-            size_bytes = txn.get(b'size')
+            size_bytes = txn.get(b"size")
             if size_bytes:
-                self.size = int.from_bytes(size_bytes, 'big')
+                self.size = int.from_bytes(size_bytes, "big")
                 self.write_idx = self.size % self.max_size
-    
+
     def add_data(self, data: List[SelfPlayData]):
         """Add training examples with optional lazy augmentation"""
         if self.lazy_augmentation:
@@ -52,7 +59,7 @@ class DataBuffer:
                         self.size += 1
 
                 # Update size
-                txn.put(b'size', self.size.to_bytes(8, 'big'))
+                txn.put(b"size", self.size.to_bytes(8, "big"))
         except lmdb.MapFullError as e:
             print(f"⚠️  LMDB map full! Attempting to resize...")
             self._resize_map()
@@ -70,57 +77,59 @@ class DataBuffer:
                     if self.size < self.max_size:
                         self.size += 1
 
-                txn.put(b'size', self.size.to_bytes(8, 'big'))
-    
+                txn.put(b"size", self.size.to_bytes(8, "big"))
+
     def _resize_map(self):
         """Dynamically resize LMDB map when full"""
         current_info = self.env.info()
-        current_size = current_info['map_size']
+        current_size = current_info["map_size"]
         new_size = int(current_size * 1.5)  # Increase by 50%
-        
-        print(f"📈 Resizing LMDB map: {current_size/1024**3:.1f}GB → {new_size/1024**3:.1f}GB")
-        
+
+        print(
+            f"📈 Resizing LMDB map: {current_size/1024**3:.1f}GB → {new_size/1024**3:.1f}GB"
+        )
+
         # Close current environment
         self.env.close()
-        
+
         # Reopen with larger map size
         self.env = lmdb.open(self.db_path, map_size=new_size)
-        
+
         # Reload size info
         with self.env.begin() as txn:
-            size_bytes = txn.get(b'size')
+            size_bytes = txn.get(b"size")
             if size_bytes:
-                self.size = int.from_bytes(size_bytes, 'big')
+                self.size = int.from_bytes(size_bytes, "big")
                 self.write_idx = self.size % self.max_size
-    
+
     def _augment_example(self, example: SelfPlayData) -> List[SelfPlayData]:
         """Apply 8-fold symmetry augmentation"""
         augmented = []
         state = example.state
         size = state.shape[-1]  # Board size from state shape
         policy = example.policy.reshape(size, size)
-        
+
         for i in range(4):  # 4 rotations
             # Rotate state (all 5 channels)
             rot_state = np.rot90(state, i, axes=(1, 2))
             rot_policy = np.rot90(policy, i)
-            
-            augmented.append(SelfPlayData(
-                state=rot_state,
-                policy=rot_policy.flatten(),
-                value=example.value
-            ))
-            
+
+            augmented.append(
+                SelfPlayData(
+                    state=rot_state, policy=rot_policy.flatten(), value=example.value
+                )
+            )
+
             # Flip horizontally
             flip_state = np.flip(rot_state, axis=2)
             flip_policy = np.flip(rot_policy, axis=1)
-            
-            augmented.append(SelfPlayData(
-                state=flip_state,
-                policy=flip_policy.flatten(),
-                value=example.value
-            ))
-        
+
+            augmented.append(
+                SelfPlayData(
+                    state=flip_state, policy=flip_policy.flatten(), value=example.value
+                )
+            )
+
         return augmented
 
     def _apply_single_augmentation(self, example: SelfPlayData, aug_idx: int) -> SelfPlayData:
@@ -172,6 +181,6 @@ class DataBuffer:
                         batch.append(pickle.loads(value))
 
         return batch
-    
+
     def __len__(self) -> int:
         return self.size
