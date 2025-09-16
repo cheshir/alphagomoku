@@ -1,0 +1,7 @@
+.idea
+.pytest_cache
+.qodo
+.snapshots
+.vscode
+.DS_Store
+
