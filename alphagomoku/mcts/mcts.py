@@ -338,9 +338,10 @@ class MCTS:
         opp_stones = (node.state == -node.current_player).astype(np.float32)
 
         last_move = np.zeros((board_size, board_size), dtype=np.float32)
-        lr, lc = node.last_move
-        if lr is not None and lr >= 0:
-            last_move[lr, lc] = 1.0
+        if node.last_move is not None:
+            lr, lc = node.last_move
+            if lr is not None and lr >= 0:
+                last_move[lr, lc] = 1.0
 
         side_to_move = np.ones((board_size, board_size), dtype=np.float32)
         pattern_maps = np.zeros((board_size, board_size), dtype=np.float32)
