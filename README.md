@@ -23,7 +23,7 @@ A strong Gomoku (15×15) AI implementation using AlphaZero methodology with self
 1. **Clone and setup environment:**
 ```bash
 git clone <repository-url>
-cd alpahgomoku
+cd alphagomoku
 conda create -n alphagomoku python=3.12
 conda activate alphagomoku
 ```
@@ -41,11 +41,14 @@ pip install -e .
 ### Verify Installation
 
 ```bash
-# Test the training pipeline
-python scripts/test_training.py
+# Test the training pipeline (currently has known issues with SelfPlayWorker API)
+# python scripts/test_training.py
 
 # Run unit tests
 python -m pytest tests/unit/ -v
+
+# Alternative: Test basic imports work
+python -c "from alphagomoku.model.network import GomokuNet; print('✓ Core imports working')"
 ```
 
 ## 🏋️ Training Pipeline
@@ -163,13 +166,16 @@ alphagomoku/
 │   ├── selfplay/         # Self-play data generation
 │   ├── train/            # Training pipeline
 │   ├── eval/             # Evaluation framework
-│   ├── tss/              # Threat-Space Search (TODO)
-│   ├── endgame/          # Endgame solver (TODO)
-│   └── utils/            # Utilities
+│   └── tss/              # Threat-Space Search
 ├── scripts/              # Training and utility scripts
 ├── tests/                # Unit and integration tests
+│   ├── unit/            # Unit tests
+│   └── integration/     # Integration tests
 ├── docs/                 # Technical specifications
-└── configs/              # Configuration files
+├── configs/              # Configuration files
+├── data/                 # Training data directory
+├── checkpoints/          # Model checkpoints
+└── runs/                 # Training run logs
 ```
 
 ## 🔧 Configuration
@@ -194,6 +200,15 @@ Training defaults:
 - **Temperature**: 1.0 for first 8 moves, then 0.0
 
 ## 🐛 Troubleshooting
+
+### Known Issues
+
+**SelfPlayWorker API Issue:**
+```bash
+# Current test_training.py fails with:
+# TypeError: SelfPlayWorker.__init__() got an unexpected keyword argument 'num_simulations'
+# Work-around: Use train.py directly for training instead
+```
 
 ### Common Issues
 
@@ -274,7 +289,8 @@ After proper training (200+ epochs, 500 games/epoch):
 - [x] Basic evaluation framework
 
 ### In Progress 🔄
-- [ ] Threat-Space Search (TSS) implementation
+- [x] Threat-Space Search (TSS) implementation (basic version complete)
+- [ ] SelfPlayWorker API fixes (constructor parameter issues)
 - [ ] Alpha-beta endgame solver
 - [ ] ONNX model export
 - [ ] Inference API server
