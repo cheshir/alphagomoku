@@ -6,6 +6,7 @@ import numpy as np
 import torch
 
 from ..env.gomoku_env import GomokuEnv
+from .config import MCTSConfig
 
 
 class MCTSNode:
@@ -49,7 +50,12 @@ class MCTSNode:
             return 0.0
         return self.value_sum / self.visit_count
 
-    def uct_score(self, cpuct: float, parent_visits: int) -> float:
+    def uct_score(
+        self,
+        cpuct: float,
+        parent_visits: int,
+        virtual_loss_penalty: float = -1e9,
+    ) -> float:
         """Upper Confidence Bound for Trees with prior"""
         q = self.value()
         u = (
@@ -59,14 +65,16 @@ class MCTSNode:
             / (1 + self.visit_count)
         )
         if self.in_flight:
-            return -1e9
+            return virtual_loss_penalty
         return q + u
 
-    def select_child(self, cpuct: float) -> "MCTSNode":
+    def select_child(
+        self, cpuct: float, virtual_loss_penalty: float = -1e9
+    ) -> "MCTSNode":
         """Select child with highest UCT score"""
         return max(
             self.children.values(),
-            key=lambda child: child.uct_score(cpuct, self.visit_count),
+            key=lambda child: child.uct_score(cpuct, self.visit_count, virtual_loss_penalty),
         )
 
     def expand(self, policy: np.ndarray):
@@ -96,20 +104,10 @@ class MCTSNode:
 class MCTS:
     """Monte Carlo Tree Search with neural network guidance"""
 
-    def __init__(
-        self,
-        model,
-        env: GomokuEnv,
-        cpuct: float = 1.8,
-        num_simulations: int = 800,
-        batch_size: int = 32,
-    ):
+    def __init__(self, model, env: GomokuEnv, config: Optional[MCTSConfig] = None):
         self.model = model
         self.env = env
-        self.cpuct = cpuct
-        self.num_simulations = num_simulations
-        # Disable batching for now due to performance issues
-        self.batch_size = batch_size
+        self.config = config or MCTSConfig()
         self.root: Optional[MCTSNode] = None
 
         # Batched evaluation
@@ -117,21 +115,36 @@ class MCTS:
         self.eval_results = {}
 
     def search(
-        self, state: np.ndarray, temperature: float = 1.0, reuse_tree: bool = False
+        self,
+        state: np.ndarray,
+        temperature: Optional[float] = None,
+        reuse_tree: Optional[bool] = None,
     ) -> Tuple[np.ndarray, np.ndarray]:
         """Run MCTS and return action probabilities and visit counts"""
+        # Use defaults from config if not specified
+        temperature = (
+            temperature
+            if temperature is not None
+            else self.config.default_temperature
+        )
+        reuse_tree = (
+            reuse_tree if reuse_tree is not None else self.config.enable_tree_reuse
+        )
+
         # Create or reuse root node
         if not reuse_tree or self.root is None:
             self.root = MCTSNode(state, board_size=self.env.board_size)
 
         # Use batching when enabled and model is on accelerated device
         device = next(self.model.parameters()).device
-        use_batched = (self.batch_size > 1) and (device.type in ("mps", "cuda"))
+        use_batched = (self.config.batch_size > 1) and (
+            device.type in ("mps", "cuda")
+        )
         if use_batched:
             self._simulate_batched()
         else:
             # Standard simulation
-            for _ in range(self.num_simulations):
+            for _ in range(self.config.num_simulations):
                 self._simulate_single()
 
         # Calculate action probabilities from visit counts
@@ -144,13 +157,13 @@ class MCTS:
             actions = np.array([action for action, _ in children_items])
             visits = np.array([child.visit_count for _, child in children_items])
 
-        if temperature == 0:
+        if temperature <= self.config.deterministic_threshold:
             # Deterministic selection
             probs = np.zeros(len(visits))
-            probs[np.argmax(visits)] = 1.0
+            probs[np.argmax(visits)] = self.config.win_value
         else:
             # Temperature-based sampling
-            visits_temp = visits ** (1.0 / temperature)
+            visits_temp = visits ** (self.config.win_value / temperature)
             probs = visits_temp / visits_temp.sum()
 
         # Convert to full action space
@@ -167,7 +180,7 @@ class MCTS:
 
         # Selection
         while node.is_expanded and not node.is_leaf():
-            node = node.select_child(self.cpuct)
+            node = node.select_child(self.config.cpuct, self.config.virtual_loss_penalty)
             path.append(node)
 
         # Terminal check
@@ -176,9 +189,13 @@ class MCTS:
         )
         if terminal:
             if winner == 0:
-                value = 0.0
+                value = self.config.draw_value
             else:
-                value = 1.0 if winner == node.current_player else -1.0
+                value = (
+                    self.config.win_value
+                    if winner == node.current_player
+                    else self.config.loss_value
+                )
         else:
             # Evaluate and expand if necessary
             policy, value = self._evaluate_node(node)
@@ -196,82 +213,120 @@ class MCTS:
         sims_done = 0
         device = next(self.model.parameters()).device
 
-        while sims_done < self.num_simulations:
-            leaves: List[Tuple[MCTSNode, List[MCTSNode]]] = []
-
-            # Collect up to batch_size leaves
-            while len(leaves) < self.batch_size and (
-                sims_done + len(leaves) < self.num_simulations
-            ):
-                node = self.root
-                path = [node]
-
-                # Selection with virtual loss marking
-                while node.is_expanded and not node.is_leaf():
-                    node = node.select_child(self.cpuct)
-                    path.append(node)
-
-                # Mark in-flight to reduce duplicate selection within this batch
-                node.in_flight = True
-
-                terminal, winner = self._is_terminal(
-                    node.state, node.last_move, self.env.board_size
-                )
-                if terminal:
-                    # Immediate backup; no NN eval needed
-                    if winner == 0:
-                        value = 0.0
-                    else:
-                        value = 1.0 if winner == node.current_player else -1.0
-                    v = value
-                    for n in reversed(path):
-                        n.backup(v)
-                        v = -v
-                    node.in_flight = False
-                    sims_done += 1
-                    continue
-
-                leaves.append((node, path))
-
+        while sims_done < self.config.num_simulations:
+            leaves = self._collect_leaves_for_batch(sims_done)
             if not leaves:
                 continue
 
-            # Batch convert states to tensors and transfer to device once
-            batch_states_np = []
-            legal_masks_np = []
+            sims_done += self._process_batch_leaves_optimized(leaves, device)
 
-            for node, _ in leaves:
-                # Convert to numpy first (faster than individual tensor conversions)
-                state_np = self._state_to_numpy_from_node(node)
-                batch_states_np.append(state_np)
-                legal_masks_np.append((node.state.reshape(-1) == 0).astype(np.float32))
+    def _collect_leaves_for_batch(
+        self, sims_done: int
+    ) -> List[Tuple[MCTSNode, List[MCTSNode]]]:
+        """Collect leaf nodes for batched evaluation."""
+        leaves: List[Tuple[MCTSNode, List[MCTSNode]]] = []
 
-            # Single device transfer for entire batch
-            batch_states = torch.from_numpy(np.stack(batch_states_np)).float().to(device)
-            legal_masks = torch.from_numpy(np.stack(legal_masks_np)).to(device)
+        while (
+            len(leaves) < self.config.batch_size
+            and sims_done + len(leaves) < self.config.num_simulations
+        ):
+            leaf_result = self._select_and_process_leaf()
+            if leaf_result is None:
+                break
+            elif leaf_result == "terminal_processed":
+                # Terminal node was processed, but doesn't contribute to batch
+                continue
+            else:
+                leaves.append(leaf_result)
 
-            policies_t, values_t = self.model.predict_batch(batch_states)
+        return leaves
 
-            # Apply legal masks and normalize per leaf, then expand and backup
-            for i, (node, path) in enumerate(leaves):
-                policy = policies_t[i]
-                legal_mask = legal_masks[i]
-                policy = policy * legal_mask
-                policy = policy / (policy.sum() + 1e-8)
+    def _select_and_process_leaf(
+        self,
+    ) -> Optional[Tuple[MCTSNode, List[MCTSNode]]]:
+        """Select a leaf node and handle terminal cases.
+        Returns None for continue, 'terminal_processed' for handled terminals, or (node, path) for batch.
+        """
+        node = self.root
+        path = [node]
 
-                value = float(values_t[i].item())
+        # Selection with virtual loss marking
+        while node.is_expanded and not node.is_leaf():
+            node = node.select_child(self.config.cpuct, self.config.virtual_loss_penalty)
+            path.append(node)
 
-                if not node.is_expanded:
-                    node.expand(policy.detach().cpu().numpy())
+        # Mark in-flight to reduce duplicate selection within this batch
+        node.in_flight = True
 
-                # Backup along path
-                v = value
-                for n in reversed(path):
-                    n.backup(v)
-                    v = -v
+        terminal, winner = self._is_terminal(
+            node.state, node.last_move, self.env.board_size
+        )
+        if terminal:
+            self._handle_terminal_node(node, path, winner)
+            return "terminal_processed"
 
-                node.in_flight = False
-                sims_done += 1
+        return (node, path)
+
+    def _handle_terminal_node(
+        self, node: MCTSNode, path: List[MCTSNode], winner: int
+    ):
+        """Handle terminal node backup and cleanup."""
+        if winner == 0:
+            value = self.config.draw_value
+        else:
+            value = (
+                self.config.win_value
+                if winner == node.current_player
+                else self.config.loss_value
+            )
+
+        v = value
+        for n in reversed(path):
+            n.backup(v)
+            v = -v
+        node.in_flight = False
+
+    def _process_batch_leaves_optimized(
+        self, leaves: List[Tuple[MCTSNode, List[MCTSNode]]], device: torch.device
+    ) -> int:
+        """Process a batch of leaves with optimized device transfers."""
+        # Batch convert states to tensors and transfer to device once
+        batch_states_np = []
+        legal_masks_np = []
+
+        for node, _ in leaves:
+            # Convert to numpy first (faster than individual tensor conversions)
+            state_np = self._state_to_numpy_from_node(node)
+            batch_states_np.append(state_np)
+            legal_masks_np.append((node.state.reshape(-1) == 0).astype(np.float32))
+
+        # Single device transfer for entire batch
+        batch_states = torch.from_numpy(np.stack(batch_states_np)).float().to(device)
+        legal_masks = torch.from_numpy(np.stack(legal_masks_np)).to(device)
+
+        policies_t, values_t = self.model.predict_batch(batch_states)
+
+        # Apply legal masks and normalize per leaf, then expand and backup
+        for i, (node, path) in enumerate(leaves):
+            policy = policies_t[i]
+            legal_mask = legal_masks[i]
+            policy = policy * legal_mask
+            policy = policy / (policy.sum() + self.config.policy_epsilon)
+
+            value = float(values_t[i].item())
+
+            if not node.is_expanded:
+                node.expand(policy.detach().cpu().numpy())
+
+            # Backup along path
+            v = value
+            for n in reversed(path):
+                n.backup(v)
+                v = -v
+
+            node.in_flight = False
+
+        return len(leaves)
 
     def _evaluate_node(self, node: MCTSNode) -> Tuple[np.ndarray, float]:
         """Evaluate a node with the neural network and mask illegal moves."""
@@ -288,14 +343,10 @@ class MCTS:
         legal_mask = torch.from_numpy(legal_mask_np).to(device)
 
         policy_t = policy_t * legal_mask
-        policy_t = policy_t / (policy_t.sum() + 1e-8)
+        policy_t = policy_t / (policy_t.sum() + self.config.policy_epsilon)
 
         policy = policy_t.detach().cpu().numpy()
         return policy, value
-
-    def _batch_evaluate_leaves(self, leaf_data: List[Tuple[MCTSNode, List[MCTSNode]]]):
-        """Deprecated: kept for compatibility; not used in new batching."""
-        return
 
     def reuse_subtree(self, action: int):
         """Reuse subtree after making a move"""
@@ -308,42 +359,6 @@ class MCTS:
             # No subtree to reuse
             self.root = None
 
-    def _state_to_tensor(self, env: GomokuEnv) -> torch.Tensor:
-        """Convert environment state to neural network input tensor (legacy)."""
-        board_size = env.board_size
-
-        # Channel 0: Current player's stones
-        own_stones = (env.board == env.current_player).astype(np.float32)
-
-        # Channel 1: Opponent's stones
-        opp_stones = (env.board == -env.current_player).astype(np.float32)
-
-        # Channel 2: Last move
-        last_move = np.zeros((board_size, board_size), dtype=np.float32)
-        if env.last_move[0] >= 0:
-            last_move[env.last_move[0], env.last_move[1]] = 1.0
-
-        # Channel 3: Side to move (1 for current player)
-        side_to_move = np.ones((board_size, board_size), dtype=np.float32)
-
-        # Channel 4: Pattern maps (simplified - can be enhanced later)
-        pattern_maps = np.zeros((board_size, board_size), dtype=np.float32)
-
-        # Stack channels
-        state = np.stack(
-            [own_stones, opp_stones, last_move, side_to_move, pattern_maps]
-        )
-        return torch.FloatTensor(state)
-
-    def _create_env_from_state(self, state: np.ndarray) -> GomokuEnv:
-        """Legacy helper (kept for compatibility); not used in new batching."""
-        env = GomokuEnv(board_size=self.env.board_size)
-        env.board = state.copy()
-        stones = np.sum(state != 0)
-        env.current_player = 1 if stones % 2 == 0 else -1
-        env.move_count = stones
-        return env
-
     def _state_to_numpy_from_node(self, node: MCTSNode) -> np.ndarray:
         """Convert node state to numpy array for faster batch processing."""
         board_size = node.board_size
@@ -352,10 +367,9 @@ class MCTS:
         opp_stones = (node.state == -node.current_player).astype(np.float32)
 
         last_move = np.zeros((board_size, board_size), dtype=np.float32)
-        if node.last_move is not None:
-            lr, lc = node.last_move
-            if lr is not None and lr >= 0:
-                last_move[lr, lc] = 1.0
+        lr, lc = node.last_move
+        if lr is not None and lr >= 0:
+            last_move[lr, lc] = 1.0
 
         side_to_move = np.ones((board_size, board_size), dtype=np.float32)
         pattern_maps = np.zeros((board_size, board_size), dtype=np.float32)
@@ -368,9 +382,8 @@ class MCTS:
         """Convert node state to NN input tensor."""
         return torch.from_numpy(self._state_to_numpy_from_node(node)).float()
 
-    @staticmethod
     def _is_terminal(
-        state: np.ndarray, last_move: Tuple[int, int], board_size: int
+        self, state: np.ndarray, last_move: Tuple[int, int], board_size: int
     ) -> Tuple[bool, int]:
         """Check terminal condition using last move.
         Returns (terminal, winner), where winner in {-1, 0, 1}.
@@ -409,6 +422,6 @@ class MCTS:
                 count += 1
                 rr -= dr
                 cc -= dc
-            if count >= 5:
+            if count >= self.config.winning_sequence_length:
                 return True, int(player)
         return False, 0

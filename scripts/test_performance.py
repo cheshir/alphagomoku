@@ -18,6 +18,7 @@ sys.path.insert(0, str(project_root))
 from alphagomoku.model.network import GomokuNet
 from alphagomoku.env.gomoku_env import GomokuEnv
 from alphagomoku.mcts.mcts import MCTS
+from alphagomoku.mcts.config import MCTSConfig
 
 def test_performance():
     """Test the performance optimizations"""
@@ -38,7 +39,8 @@ def test_performance():
     
     env = GomokuEnv(board_size=15)
     test_sims = 100  # Reduced for testing
-    mcts = MCTS(model, env, num_simulations=test_sims)
+    config = MCTSConfig(num_simulations=test_sims, batch_size=32)
+    mcts = MCTS(model, env, config)
     
     # Test 1: Action mask vectorization
     print("\n1. Testing action mask vectorization...")
