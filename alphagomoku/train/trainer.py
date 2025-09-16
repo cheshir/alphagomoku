@@ -28,18 +28,19 @@ class Trainer:
         self.step = 0
     
     def train_step(self, batch: List[SelfPlayData]) -> Dict[str, float]:
-        """Single training step"""
+        """Single training step with optimized tensor conversion"""
         if not batch:
             return {}
-        
-        # Prepare batch tensors
-        states = torch.stack([torch.FloatTensor(data.state) for data in batch])
-        policies = torch.stack([torch.FloatTensor(data.policy) for data in batch])
-        values = torch.FloatTensor([data.value for data in batch])
-        
-        states = states.to(self.device)
-        policies = policies.to(self.device)
-        values = values.to(self.device)
+
+        # Optimize tensor creation by batching numpy arrays first
+        states_np = np.stack([data.state for data in batch])
+        policies_np = np.stack([data.policy for data in batch])
+        values_np = np.array([data.value for data in batch])
+
+        # Single tensor conversion and device transfer
+        states = torch.from_numpy(states_np).float().to(self.device)
+        policies = torch.from_numpy(policies_np).float().to(self.device)
+        values = torch.from_numpy(values_np).float().to(self.device)
         
         # Forward pass
         self.optimizer.zero_grad()
