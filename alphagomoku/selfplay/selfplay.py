@@ -3,6 +3,7 @@ from typing import List, NamedTuple, Tuple
 
 import numpy as np
 import torch
+from tqdm import tqdm
 
 from ..env.gomoku_env import GomokuEnv
 from ..mcts.adaptive import AdaptiveSimulator
@@ -123,9 +124,10 @@ class SelfPlayWorker:
     def generate_batch(self, num_games: int) -> List[SelfPlayData]:
         """Generate multiple self-play games"""
         all_data = []
-        for i in range(num_games):
-            print(f"\rGame {i+1}/{num_games}", end="", flush=True)
+        game_pbar = tqdm(range(num_games), desc="Self-play", leave=False, unit="game")
+        for i in game_pbar:
             game_data = self.generate_game()
             all_data.extend(game_data)
-        print(f" - Generated {len(all_data)} positions")
+            game_pbar.set_postfix({'positions': len(all_data)})
+        game_pbar.close()
         return all_data

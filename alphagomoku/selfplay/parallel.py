@@ -2,6 +2,7 @@
 
 import multiprocessing as mp
 from typing import List
+from tqdm import tqdm
 
 from .selfplay import SelfPlayData, SelfPlayWorker
 
@@ -44,11 +45,12 @@ def worker_process(
 
     # Generate games
     all_data = []
-    for i in range(num_games):
-        print(f"Worker {worker_id}: Game {i+1}/{num_games}")
+    game_pbar = tqdm(range(num_games), desc=f"Worker {worker_id}", leave=False, unit="game")
+    for i in game_pbar:
         game_data = worker.generate_game()
         all_data.extend(game_data)
-
+        game_pbar.set_postfix({'positions': len(all_data)})
+    game_pbar.close()
     return all_data
 
 
@@ -125,5 +127,4 @@ class ParallelSelfPlay:
         for result in results:
             all_data.extend(result)
 
-        print(f"Generated {len(all_data)} positions from {num_games} games")
         return all_data

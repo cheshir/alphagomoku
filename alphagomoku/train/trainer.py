@@ -5,6 +5,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.tensorboard import SummaryWriter
+from tqdm import tqdm
 
 from ..model.network import GomokuNet
 from ..selfplay.selfplay import SelfPlayData
@@ -100,15 +101,19 @@ class Trainer:
         self.model.train()
         epoch_metrics = []
 
-        for i in range(steps_per_epoch):
-            if i % 100 == 0:
-                print(f"\rTraining step {i}/{steps_per_epoch}", end="", flush=True)
+        step_pbar = tqdm(range(steps_per_epoch), desc="Training", leave=False, unit="step")
+        for i in step_pbar:
             batch = data_buffer.sample_batch(batch_size)
             if batch:
                 metrics = self.train_step(batch)
                 epoch_metrics.append(metrics)
+                if metrics:
+                    step_pbar.set_postfix({
+                        'loss': f"{metrics['total_loss']:.4f}",
+                        'acc': f"{metrics['policy_accuracy']:.3f}"
+                    })
 
-        print(f"\rTraining completed: {steps_per_epoch} steps")
+        step_pbar.close()
         self.scheduler.step()
 
         # Average metrics

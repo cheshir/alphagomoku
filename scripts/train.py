@@ -8,6 +8,7 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
+from tqdm import tqdm
 
 # MPS optimization settings
 os.environ['PYTORCH_ENABLE_MPS_FALLBACK'] = '0'  # Fail if ops fallback to CPU
@@ -231,48 +232,47 @@ def main():
             print(f"Resumed from epoch {start_epoch}")
     
     # Training loop
-    for epoch in range(start_epoch, args.epochs):
+    epoch_pbar = tqdm(range(start_epoch, args.epochs), desc="Training", unit="epoch")
+    for epoch in epoch_pbar:
         epoch_start = time.time()
-        print(f"\n{'='*50}")
-        print(f"Epoch {epoch+1}/{args.epochs}")
-        print(f"{'='*50}")
         
         # Generate self-play data
-        print("🎮 Generating self-play data...")
         selfplay_start = time.time()
         selfplay_data = selfplay_worker.generate_batch(args.selfplay_games)
         
         try:
             data_buffer.add_data(selfplay_data)
             selfplay_time = time.time() - selfplay_start
-            print(f"   ✓ Generated {len(selfplay_data)} positions in {selfplay_time:.1f}s")
-            print(f"   📊 Buffer size: {len(data_buffer):,} positions")
+            epoch_pbar.set_postfix({
+                'positions': len(selfplay_data),
+                'buffer': f"{len(data_buffer):,}",
+                'selfplay_time': f"{selfplay_time:.1f}s"
+            })
         except Exception as e:
-            print(f"   ❌ Error adding data to buffer: {e}")
-            print(f"   💡 Try increasing --map-size-gb (current: {args.map_size_gb}GB)")
-            print(f"   💡 Or reducing --buffer-max-size (current: {args.buffer_max_size:,})")
+            tqdm.write(f"❌ Error adding data to buffer: {e}")
+            tqdm.write(f"💡 Try increasing --map-size-gb (current: {args.map_size_gb}GB)")
+            tqdm.write(f"💡 Or reducing --buffer-max-size (current: {args.buffer_max_size:,})")
             raise
         
         # Train
-        print("\n🧠 Training neural network...")
         train_start = time.time()
         metrics = trainer.train_epoch(data_buffer, args.batch_size)
         train_time = time.time() - train_start
         
         if metrics:
-            print(f"\n📈 Training Results:")
-            print(f"   Loss: {metrics['total_loss']:.4f} | "
-                  f"Policy Acc: {metrics['policy_accuracy']:.3f} | "
-                  f"Value MAE: {metrics['value_mae']:.3f}")
-            print(f"   LR: {metrics['lr']:.6f} | Time: {train_time:.1f}s")
+            epoch_pbar.set_postfix({
+                'loss': f"{metrics['total_loss']:.4f}",
+                'acc': f"{metrics['policy_accuracy']:.3f}",
+                'mae': f"{metrics['value_mae']:.3f}",
+                'lr': f"{metrics['lr']:.1e}",
+                'train_time': f"{train_time:.1f}s"
+            })
         
         # Save checkpoint every epoch
         checkpoint_path = os.path.join(args.checkpoint_dir, f'model_epoch_{epoch}.pt')
         trainer.save_checkpoint(checkpoint_path, epoch, metrics)
-        print(f"\n💾 Saved checkpoint: {checkpoint_path}")
         
         epoch_time = time.time() - epoch_start
-        print(f"\n⏱️  Epoch completed in {epoch_time:.1f}s")
         
         # Track history
         if metrics:
@@ -285,13 +285,15 @@ def main():
         if (epoch + 1) % 5 == 0 and len(training_history['loss']) > 1:
             _plot_training_progress(training_history, epoch + 1)
     
+    epoch_pbar.close()
+    
     # Save final model
     final_path = os.path.join(args.checkpoint_dir, 'model_final.pt')
     trainer.save_checkpoint(final_path, args.epochs - 1, metrics)
     
     # Generate final report
     _generate_final_report(training_history, args, final_path)
-    print(f"\n🎉 Training complete! Final model: {final_path}")
+    tqdm.write(f"🎉 Training complete! Final model: {final_path}")
 
 
 if __name__ == '__main__':

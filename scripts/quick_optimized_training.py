@@ -4,6 +4,7 @@
 import os
 import sys
 from pathlib import Path
+from tqdm import tqdm
 
 # MPS optimization settings
 os.environ['PYTORCH_ENABLE_MPS_FALLBACK'] = '0'
@@ -19,8 +20,8 @@ from alphagomoku.selfplay.selfplay import SelfPlayWorker
 
 def main():
     """Quick optimized training test"""
-    print("🚀 Quick Optimized Training Test")
-    print("=" * 40)
+    tqdm.write("🚀 Quick Optimized Training Test")
+    tqdm.write("=" * 40)
     
     # Initialize optimized model
     model = GomokuNet(board_size=15, num_blocks=12, channels=64)
@@ -30,7 +31,7 @@ def main():
         model.to('mps')
     elif torch.cuda.is_available():
         model.to('cuda')
-    print(f"Model parameters: {model.get_model_size():,}")
+    tqdm.write(f"Model parameters: {model.get_model_size():,}")
     
     # Create optimized self-play worker
     worker = SelfPlayWorker(
@@ -40,37 +41,37 @@ def main():
         batch_size=32          # Enable batched evaluation
     )
     
-    print("✓ Optimizations enabled:")
-    print("  - Batched neural network evaluation (batch_size=32)")
-    print("  - Root reuse between moves")
-    print("  - Adaptive simulation scheduling")
-    print("  - MPS acceleration (if available)")
+    tqdm.write("✓ Optimizations enabled:")
+    tqdm.write("  - Batched neural network evaluation (batch_size=32)")
+    tqdm.write("  - Root reuse between moves")
+    tqdm.write("  - Adaptive simulation scheduling")
+    tqdm.write("  - MPS acceleration (if available)")
     
     # Generate a quick game
-    print("\n🎮 Generating optimized self-play game...")
+    tqdm.write("\n🎮 Generating optimized self-play game...")
     import time
     start_time = time.time()
     
     game_data = worker.generate_game()
     
     elapsed = time.time() - start_time
-    print(f"✅ Game completed in {elapsed:.2f}s")
-    print(f"📊 Generated {len(game_data)} training positions")
-    print(f"⚡ Average time per move: {elapsed/len(game_data):.3f}s")
+    tqdm.write(f"✅ Game completed in {elapsed:.2f}s")
+    tqdm.write(f"📊 Generated {len(game_data)} training positions")
+    tqdm.write(f"⚡ Average time per move: {elapsed/len(game_data):.3f}s")
     
     # Show expected performance improvement
-    print(f"\n📈 Performance Estimate:")
-    print(f"  - With optimizations: ~{elapsed:.1f}s per game")
-    print(f"  - Without optimizations: ~{elapsed*3:.1f}s per game (estimated)")
-    print(f"  - Speedup: ~3x faster")
+    tqdm.write(f"\n📈 Performance Estimate:")
+    tqdm.write(f"  - With optimizations: ~{elapsed:.1f}s per game")
+    tqdm.write(f"  - Without optimizations: ~{elapsed*3:.1f}s per game (estimated)")
+    tqdm.write(f"  - Speedup: ~3x faster")
     
-    print(f"\n🎯 For full training, use:")
-    print(f"python scripts/train.py \\")
-    print(f"    --adaptive-sims \\")
-    print(f"    --batch-size-mcts 32 \\")
-    print(f"    --parallel-workers 2 \\")
-    print(f"    --mcts-simulations 200 \\")
-    print(f"    --epochs 50")
+    tqdm.write(f"\n🎯 For full training, use:")
+    tqdm.write(f"python scripts/train.py \\")
+    tqdm.write(f"    --adaptive-sims \\")
+    tqdm.write(f"    --batch-size-mcts 32 \\")
+    tqdm.write(f"    --parallel-workers 2 \\")
+    tqdm.write(f"    --mcts-simulations 200 \\")
+    tqdm.write(f"    --epochs 50")
 
 
 if __name__ == "__main__":

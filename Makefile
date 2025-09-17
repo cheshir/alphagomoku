@@ -21,7 +21,7 @@ train-fast:
 	export PYTORCH_ENABLE_MPS_FALLBACK=0
 	export OMP_NUM_THREADS=1
 	python scripts/train.py \
- 		--epochs 5 \
+ 		--epochs 50 \
  		--selfplay-games 100 \
  		--mcts-simulations 400 \
  		--batch-size 1024 \
