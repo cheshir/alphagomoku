@@ -10,6 +10,7 @@ from tqdm import tqdm
 from ..model.network import GomokuNet
 from ..selfplay.selfplay import SelfPlayData
 from .data_buffer import DataBuffer
+from .schedulers import WarmupCosineScheduler
 
 
 class Trainer:
@@ -21,6 +22,10 @@ class Trainer:
         lr: float = 0.001,
         weight_decay: float = 1e-4,
         device: str = None,
+        lr_schedule: str = "step",  # 'step' or 'cosine'
+        warmup_epochs: int = 0,
+        max_epochs: int = 100,
+        min_lr: float = 1e-5,
     ):
         self.model = model
         self.device = device or ("mps" if torch.backends.mps.is_available() else "cpu")
@@ -29,9 +34,20 @@ class Trainer:
         self.optimizer = optim.AdamW(
             model.parameters(), lr=lr, weight_decay=weight_decay
         )
-        self.scheduler = optim.lr_scheduler.StepLR(
-            self.optimizer, step_size=100, gamma=0.9
-        )
+        # Learning rate scheduler
+        if lr_schedule == "cosine":
+            self.scheduler = WarmupCosineScheduler(
+                self.optimizer,
+                warmup_epochs=warmup_epochs,
+                max_epochs=max_epochs,
+                base_lr=lr,
+                min_lr=min_lr,
+                start_epoch=0,
+            )
+        else:
+            self.scheduler = optim.lr_scheduler.StepLR(
+                self.optimizer, step_size=100, gamma=0.9
+            )
 
         self.policy_loss_fn = nn.KLDivLoss(reduction="batchmean")
         self.value_loss_fn = nn.MSELoss()
@@ -40,16 +56,59 @@ class Trainer:
         self.step = 0
 
     def train_step(self, batch: List[SelfPlayData]) -> Dict[str, float]:
-        """Single training step with optimized tensor conversion"""
+        """Single training step with optimized tensor conversion.
+
+        Accepts batch items with state either as (H, W) int board or (5, H, W) tensor.
+        Builds 5-channel input expected by the model.
+        """
         if not batch:
             return {}
 
-        # Optimize tensor creation by batching numpy arrays first
-        states_np = np.stack([data.state for data in batch])
+        # Build 5-channel inputs
+        first_state = batch[0].state
+        states_list: List[np.ndarray] = []
+        board_h = None
+        board_w = None
+        for data in batch:
+            s = data.state
+            if s.ndim == 2:
+                h, w = s.shape
+                board_h = board_h or h
+                board_w = board_w or w
+                current_player = getattr(data, "current_player", 1)
+                last_move = getattr(data, "last_move", None)
+                own = (s == current_player).astype(np.float32)
+                opp = (s == -current_player).astype(np.float32)
+                last = np.zeros_like(s, dtype=np.float32)
+                if last_move is not None and last_move[0] is not None and last_move[0] >= 0:
+                    lr, lc = last_move
+                    if 0 <= lr < h and 0 <= lc < w:
+                        last[lr, lc] = 1.0
+                side = np.ones_like(s, dtype=np.float32)
+                pattern = np.zeros_like(s, dtype=np.float32)
+                states_list.append(np.stack([own, opp, last, side, pattern]))
+            elif s.ndim == 3 and s.shape[0] == 5:
+                states_list.append(s.astype(np.float32))
+            else:
+                raise ValueError("Invalid state shape in training batch")
+
+        # Validate shapes consistency (policy length vs board area)
+        size = states_list[0].shape[-1]
+        expected_actions = size * size
         policies_np = np.stack([data.policy for data in batch])
+        if policies_np.shape[1] != expected_actions:
+            raise ValueError("Policy length does not match board size")
+
+        # Optimize tensor creation by batching numpy arrays first
+        states_np = np.stack(states_list)
         values_np = np.array([data.value for data in batch])
 
+        # Validate finite values
+        if not np.all(np.isfinite(states_np)) or not np.all(np.isfinite(policies_np)) or not np.all(np.isfinite(values_np)):
+            raise ValueError("Non-finite values in training batch")
+
         # Single tensor conversion and device transfer
+        self.model.train()
         states = torch.from_numpy(states_np).float().to(self.device)
         policies = torch.from_numpy(policies_np).float().to(self.device)
         values = torch.from_numpy(values_np).float().to(self.device)
@@ -101,7 +160,13 @@ class Trainer:
         self.model.train()
         epoch_metrics = []
 
-        step_pbar = tqdm(range(steps_per_epoch), desc="Training", leave=False, unit="step")
+        step_pbar = tqdm(
+            range(steps_per_epoch),
+            desc="Train steps",
+            leave=False,
+            unit="step",
+            position=2,
+        )
         for i in step_pbar:
             batch = data_buffer.sample_batch(batch_size)
             if batch:

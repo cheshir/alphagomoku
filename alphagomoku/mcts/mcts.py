@@ -118,15 +118,73 @@ class MCTSNode:
 class MCTS:
     """Monte Carlo Tree Search with neural network guidance"""
 
-    def __init__(self, model, env: GomokuEnv, config: Optional[MCTSConfig] = None):
+    def __init__(
+        self,
+        model,
+        env: GomokuEnv,
+        config: Optional[MCTSConfig] = None,
+        *,
+        num_simulations: Optional[int] = None,
+        cpuct: Optional[float] = None,
+        batch_size: Optional[int] = None,
+    ):
+        """Create an MCTS instance.
+
+        Older call sites often passed ``num_simulations``/``cpuct``/``batch_size``
+        directly to the constructor or mutated attributes on the instance. To
+        remain source compatible we allow those keyword arguments and expose
+        properties that transparently forward to :class:`MCTSConfig`.
+        """
+
         self.model = model
         self.env = env
-        self.config = config or MCTSConfig()
+
+        base_config = config or MCTSConfig()
+        if num_simulations is not None:
+            if num_simulations < 0:
+                raise ValueError("num_simulations must be non-negative")
+            base_config.num_simulations = int(num_simulations)
+        if cpuct is not None:
+            base_config.cpuct = float(cpuct)
+        if batch_size is not None:
+            if batch_size <= 0:
+                raise ValueError("batch_size must be positive")
+            base_config.batch_size = int(batch_size)
+
+        self.config = base_config
         self.root: Optional[MCTSNode] = None
 
         # Batched evaluation
         self.eval_queue = deque()
         self.eval_results = {}
+        self.last_visit_counts: np.ndarray = np.array([], dtype=float)
+
+    @property
+    def num_simulations(self) -> int:
+        """Number of simulations to run during search."""
+        return self.config.num_simulations
+
+    @num_simulations.setter
+    def num_simulations(self, value: int) -> None:
+        self.config.num_simulations = int(value)
+
+    @property
+    def cpuct(self) -> float:
+        """Exploration constant used during tree policy selection."""
+        return self.config.cpuct
+
+    @cpuct.setter
+    def cpuct(self, value: float) -> None:
+        self.config.cpuct = float(value)
+
+    @property
+    def batch_size(self) -> int:
+        """Batch size for neural network evaluations."""
+        return self.config.batch_size
+
+    @batch_size.setter
+    def batch_size(self, value: int) -> None:
+        self.config.batch_size = int(value)
 
     def search(
         self,
@@ -145,15 +203,30 @@ class MCTS:
             reuse_tree if reuse_tree is not None else self.config.enable_tree_reuse
         )
 
+        if self.config.num_simulations < 0:
+            raise ValueError("num_simulations must be non-negative")
+        if self.config.batch_size <= 0:
+            raise ValueError("batch_size must be positive")
+
+        state = np.asarray(state)
+        expected_shape = (self.env.board_size, self.env.board_size)
+        if state.shape != expected_shape:
+            raise ValueError(
+                f"state must have shape {expected_shape}, got {state.shape}"
+            )
+        if not np.issubdtype(state.dtype, np.integer):
+            raise ValueError("state must contain integer values")
+        if not np.isin(state, (-1, 0, 1)).all():
+            raise ValueError("state contains invalid stone values")
+        state = state.astype(np.int8, copy=False)
+
         # Create or reuse root node
         if not reuse_tree or self.root is None:
             self.root = MCTSNode(state, board_size=self.env.board_size)
-
+        
         # Use batching when enabled and model is on accelerated device
         device = next(self.model.parameters()).device
-        use_batched = (self.config.batch_size > 1) and (
-            device.type in ("mps", "cuda")
-        )
+        use_batched = self.config.batch_size > 1
         if use_batched:
             self._simulate_batched()
         else:
@@ -185,7 +258,9 @@ class MCTS:
         if actions.size > 0:
             action_probs[actions] = probs
 
-        return action_probs, visits
+        self.last_visit_counts = visits.copy()
+        root_value = self.root.value() if self.root is not None else 0.0
+        return action_probs, float(root_value)
 
     def _simulate_single(self):
         """Single MCTS simulation (no batching)."""
@@ -319,6 +394,8 @@ class MCTS:
         legal_masks = torch.from_numpy(np.stack(legal_masks_np)).to(device)
 
         policies_t, values_t = self.model.predict_batch(batch_states)
+        if not torch.isfinite(policies_t).all() or not torch.isfinite(values_t).all():
+            raise ValueError("Model produced non-finite outputs during batched evaluation")
 
         # Apply legal masks and normalize per leaf, then expand and backup
         for i, (node, path) in enumerate(leaves):
@@ -383,6 +460,9 @@ class MCTS:
         # Create legal mask on device directly
         legal_mask_np = (node.state.reshape(-1) == 0).astype(np.float32)
         legal_mask = torch.from_numpy(legal_mask_np).to(device)
+
+        if not torch.isfinite(policy_t).all() or not torch.isfinite(value).all():
+            raise ValueError("Model produced non-finite outputs during evaluation")
 
         policy_t = policy_t * legal_mask
         policy_t = policy_t / (policy_t.sum() + self.config.policy_epsilon)

@@ -10,6 +10,8 @@ class GomokuEnv(gym.Env):
 
     def __init__(self, board_size: int = 15, rule_profile: str = "classic"):
         super().__init__()
+        if not isinstance(board_size, int) or board_size <= 0:
+            raise ValueError("board_size must be a positive integer")
         self.board_size = board_size
         self.rule_profile = rule_profile
 
@@ -49,10 +51,18 @@ class GomokuEnv(gym.Env):
         return self._get_observation(), {}
 
     def step(self, action: int) -> Tuple[Dict, float, bool, bool, Dict]:
+        # If game already over, remain terminated and return current observation
         if self.game_over:
-            raise ValueError("Game is already over")
+            return self._get_observation(), 0.0, True, False, {"game_over": True}
 
-        row, col = divmod(action, self.board_size)
+        # Validate action bounds
+        if not isinstance(action, (int, np.integer)) or not (
+            0 <= int(action) < self.board_size * self.board_size
+        ):
+            self.game_over = True
+            return self._get_observation(), -1.0, True, False, {"invalid_move": True}
+
+        row, col = divmod(int(action), self.board_size)
 
         if self.board[row, col] != 0:
             # Invalid move - terminate game
@@ -82,8 +92,9 @@ class GomokuEnv(gym.Env):
         return self._get_observation(), 0.0, False, False, {}
 
     def _get_observation(self) -> Dict:
-        # Convert board to current player's perspective
-        obs_board = self.board * self.current_player
+        # Normalize board values and convert to current player's perspective
+        normalized = np.clip(self.board, -1, 1)
+        obs_board = normalized * self.current_player
 
         return {
             "board": obs_board,

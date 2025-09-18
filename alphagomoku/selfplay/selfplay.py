@@ -43,8 +43,11 @@ class SelfPlayWorker:
         # Keep reference to MCTS for adaptive simulations
         self.mcts = self.search.mcts
         self.adaptive_simulator = AdaptiveSimulator() if adaptive_sims else None
+        # Ensure the initial simulation budget matches requested value
+        # (UnifiedSearch picks defaults by difficulty; override here)
+        self.mcts.num_simulations = self.mcts_simulations
 
-    def generate_game(self, temperature_moves: int = 8) -> List[SelfPlayData]:
+    def generate_game(self, temperature_moves: int = 8, max_moves: int | None = None) -> List[SelfPlayData]:
         """Generate one self-play game and return training examples"""
         self.env.reset()
         self.mcts.root = None  # Reset tree
@@ -52,6 +55,8 @@ class SelfPlayWorker:
         move_count = 0
 
         while not self.env.game_over:
+            if max_moves is not None and move_count >= max_moves:
+                break
             # Get current state for neural network
             state_tensor = self._get_state_tensor()
 
@@ -124,7 +129,9 @@ class SelfPlayWorker:
     def generate_batch(self, num_games: int) -> List[SelfPlayData]:
         """Generate multiple self-play games"""
         all_data = []
-        game_pbar = tqdm(range(num_games), desc="Self-play", leave=False, unit="game")
+        game_pbar = tqdm(
+            range(num_games), desc="Self-play", leave=False, unit="game", position=1
+        )
         for i in game_pbar:
             game_data = self.generate_game()
             all_data.extend(game_data)

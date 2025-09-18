@@ -71,7 +71,7 @@ def benchmark_mcts_performance():
         for i in range(5):
             env.reset()
             start_time = time.time()
-            policy, visits = mcts.search(env.board, temperature=0.0)
+            policy, _ = mcts.search(env.board, temperature=0.0)
             elapsed = time.time() - start_time
             times.append(elapsed)
             print(f"   Run {i+1}: {elapsed:.3f}s")

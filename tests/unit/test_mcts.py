@@ -3,7 +3,7 @@
 import pytest
 import numpy as np
 import torch
-from unittest.mock import Mock, patch
+from unittest.mock import patch
 from alphagomoku.mcts.mcts import MCTS, MCTSNode
 from alphagomoku.env.gomoku_env import GomokuEnv
 from alphagomoku.model.network import GomokuNet
@@ -100,6 +100,12 @@ class TestMCTS:
         assert isinstance(value, (int, float, np.number))
         assert -1 <= value <= 1
 
+        visits = mcts.last_visit_counts
+        assert isinstance(visits, np.ndarray)
+        assert visits.ndim == 1
+        if visits.size > 0:
+            assert np.all(visits >= 0)
+
     def test_search_with_mask(self, setup_mcts):
         """Test MCTS search with action mask."""
         env, model, mcts = setup_mcts
@@ -119,26 +125,27 @@ class TestMCTS:
     def test_batch_evaluation(self, setup_mcts):
         """Test batched neural network evaluation."""
         env, model, mcts = setup_mcts
+        env.reset()
 
-        # Create multiple states
-        states = []
-        for i in range(5):
-            state = np.zeros((9, 9), dtype=np.int8)
-            state[i, i] = 1  # Different patterns
-            states.append(state)
-
-        # Mock model evaluation
-        with patch.object(model, 'forward') as mock_forward:
-            mock_forward.return_value = (
-                torch.rand(5, 81),  # Policy logits
-                torch.rand(5)       # Values
+        def fake_predict_batch(board_states: torch.Tensor):
+            batch = board_states.shape[0]
+            action_space = env.board_size * env.board_size
+            device = board_states.device
+            policies = torch.full(
+                (batch, action_space), 1.0 / action_space, device=device
             )
+            values = torch.zeros(batch, device=device)
+            return policies, values
 
-            policies, values = mcts._evaluate_batch(states)
+        mcts.batch_size = 4  # Ensure batched path is exercised
+        with patch.object(model, 'predict_batch', side_effect=fake_predict_batch) as mock_predict:
+            action_probs, value = mcts.search(env.board)
 
-            assert len(policies) == 5
-            assert len(values) == 5
-            mock_forward.assert_called_once()
+        assert mock_predict.called
+        assert len(action_probs) == env.board_size ** 2
+        assert isinstance(value, (int, float, np.number))
+        visits = mcts.last_visit_counts
+        assert isinstance(visits, np.ndarray)
 
     def test_tree_reuse(self, setup_mcts):
         """Test MCTS tree reuse between searches."""
@@ -277,6 +284,7 @@ class TestMCTSBatchProcessing:
 
         assert len(action_probs) == 81
         assert np.sum(action_probs) > 0
+        assert isinstance(value, (int, float, np.number))
 
     def test_batch_performance(self, setup_batch_mcts):
         """Test batch processing performance."""

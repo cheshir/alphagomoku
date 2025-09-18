@@ -107,7 +107,8 @@ class UnifiedSearch:
                 return self._create_tss_result(tss_result, state)
 
         # 3. Fall back to MCTS
-        action_probs, visits = self.mcts.search(state, temperature, reuse_tree)
+        action_probs, root_value = self.mcts.search(state, temperature, reuse_tree)
+        visit_counts = getattr(self.mcts, "last_visit_counts", np.array([]))
         best_action = np.argmax(action_probs) if action_probs.sum() > 0 else None
         best_move = None
         if best_action is not None:
@@ -118,9 +119,9 @@ class UnifiedSearch:
             best_move=best_move,
             search_method='mcts',
             is_forced=False,
-            evaluation=None,
+            evaluation=float(root_value),
             search_stats={
-                'total_visits': int(visits.sum()) if len(visits) > 0 else 0,
+                'total_visits': int(visit_counts.sum()) if visit_counts.size > 0 else 0,
                 'method': 'mcts'
             }
         )

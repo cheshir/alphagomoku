@@ -56,7 +56,7 @@ def _plot_training_progress(history, current_epoch):
     plt.close()
 
 
-def _generate_final_report(history, args, model_path):
+def _generate_final_report(history, args, model_path, effective_lr_schedule: str):
     """Generate comprehensive training report"""
     plt.figure(figsize=(15, 10))
     
@@ -113,6 +113,10 @@ Learning Rate: {args.lr}"""
     # Training configuration
     plt.subplot(2, 3, 6)
     plt.axis('off')
+    # Derive friendly labels from effective schedule
+    schedule_label = 'Cosine+Warmup' if effective_lr_schedule == 'cosine' else 'StepLR'
+    warmup_display = args.warmup_epochs if effective_lr_schedule == 'cosine' else 0
+
     config_text = f"""Configuration:
     
 • Board Size: 15x15
@@ -128,7 +132,8 @@ Learning Rate: {args.lr}"""
 • Temperature Moves: 8
 • Optimizer: AdamW
 • Weight Decay: 1e-4
-• LR Schedule: StepLR
+• LR Schedule: {schedule_label}
+• Warmup Epochs: {warmup_display}
 • Device: MPS/CPU"""
     plt.text(0.1, 0.9, config_text, fontsize=11, verticalalignment='top',
             bbox=dict(boxstyle='round', facecolor='lightgreen', alpha=0.8))
@@ -144,12 +149,55 @@ Learning Rate: {args.lr}"""
               f"Acc={history['policy_acc'][-1]:.3f}, MAE={history['value_mae'][-1]:.3f}")
 
 
+def _append_metrics_csv(csv_path: str, epoch: int, history: dict, extra: dict):
+    """Append training metrics to a CSV file, creating header on first write."""
+    import csv
+    import os
+
+    os.makedirs(os.path.dirname(csv_path), exist_ok=True)
+
+    headers = [
+        'epoch', 'loss', 'policy_acc', 'value_mae', 'lr',
+        'epoch_time', 'selfplay_time', 'train_time', 'buffer_size', 'positions'
+    ]
+    # Current values (may be None if metrics not computed)
+    loss = history['loss'][-1] if history['loss'] else ''
+    acc = history['policy_acc'][-1] if history['policy_acc'] else ''
+    mae = history['value_mae'][-1] if history['value_mae'] else ''
+    lr = extra.get('lr', '')
+    row = [
+        epoch,
+        loss,
+        acc,
+        mae,
+        lr,
+        extra.get('epoch_time', ''),
+        extra.get('selfplay_time', ''),
+        extra.get('train_time', ''),
+        extra.get('buffer_size', ''),
+        extra.get('positions', ''),
+    ]
+
+    file_exists = os.path.exists(csv_path)
+    with open(csv_path, 'a', newline='') as f:
+        writer = csv.writer(f)
+        if not file_exists:
+            writer.writerow(headers)
+        writer.writerow(row)
+
+
 def main():
     parser = argparse.ArgumentParser(description='Train AlphaGomoku model')
     parser.add_argument('--data-dir', type=str, default='./data', help='Data directory')
     parser.add_argument('--checkpoint-dir', type=str, default='./checkpoints', help='Checkpoint directory')
     parser.add_argument('--batch-size', type=int, default=512, help='Batch size')
     parser.add_argument('--lr', type=float, default=0.001, help='Learning rate')
+    parser.add_argument('--lr-schedule', type=str, choices=['step', 'cosine', 'auto'], default='step',
+                        help='Learning rate schedule ("auto" uses cosine if warmup>0, else step)')
+    parser.add_argument('--warmup-epochs', type=int, default=0,
+                        help='Warmup epochs for cosine schedule')
+    parser.add_argument('--min-lr', type=float, default=1e-5,
+                        help='Minimum LR for cosine schedule')
     parser.add_argument('--epochs', type=int, default=100, help='Number of epochs')
     parser.add_argument('--selfplay-games', type=int, default=100, help='Self-play games per iteration')
     parser.add_argument('--mcts-simulations', type=int, default=100, help='MCTS simulations per move')
@@ -172,9 +220,22 @@ def main():
     model = GomokuNet(board_size=15, num_blocks=12, channels=64)
     print(f"Model parameters: {model.get_model_size():,}")
     
+    # Determine effective LR schedule
+    effective_lr_schedule = args.lr_schedule
+    if effective_lr_schedule == 'auto':
+        effective_lr_schedule = 'cosine' if args.warmup_epochs > 0 else 'step'
+
     # Initialize trainer
-    trainer = Trainer(model, lr=args.lr)
+    trainer = Trainer(
+        model,
+        lr=args.lr,
+        lr_schedule=effective_lr_schedule,
+        warmup_epochs=args.warmup_epochs,
+        max_epochs=args.epochs,
+        min_lr=args.min_lr,
+    )
     print(f"Trainer device: {trainer.device}")
+    print(f"LR schedule: {effective_lr_schedule} (warmup_epochs={args.warmup_epochs}, min_lr={args.min_lr})")
     
     # Optimize for MPS
     if torch.backends.mps.is_available():
@@ -232,7 +293,9 @@ def main():
             print(f"Resumed from epoch {start_epoch}")
     
     # Training loop
-    epoch_pbar = tqdm(range(start_epoch, args.epochs), desc="Training", unit="epoch")
+    epoch_pbar = tqdm(
+        range(start_epoch, args.epochs), desc="Epochs", unit="epoch", position=0
+    )
     for epoch in epoch_pbar:
         epoch_start = time.time()
         
@@ -281,9 +344,27 @@ def main():
             training_history['value_mae'].append(metrics['value_mae'])
         training_history['epoch_times'].append(epoch_time)
         
-        # Show progress chart every 5 epochs
-        if (epoch + 1) % 5 == 0 and len(training_history['loss']) > 1:
-            _plot_training_progress(training_history, epoch + 1)
+        # Persist metrics to CSV and refresh report each epoch
+        csv_path = os.path.join(args.checkpoint_dir, 'training_metrics.csv')
+        _append_metrics_csv(
+            csv_path,
+            epoch,
+            training_history,
+            {
+                'epoch_time': round(epoch_time, 3),
+                'selfplay_time': round(selfplay_time, 3),
+                'train_time': round(train_time, 3),
+                'buffer_size': len(data_buffer),
+                'positions': len(selfplay_data),
+                'lr': metrics['lr'] if metrics else ''
+            },
+        )
+
+        # Always update the comprehensive report after each epoch
+        try:
+            _generate_final_report(training_history, args, checkpoint_path, effective_lr_schedule)
+        except Exception as e:
+            tqdm.write(f"⚠️ Failed to update report: {e}")
     
     epoch_pbar.close()
     
@@ -292,7 +373,7 @@ def main():
     trainer.save_checkpoint(final_path, args.epochs - 1, metrics)
     
     # Generate final report
-    _generate_final_report(training_history, args, final_path)
+    _generate_final_report(training_history, args, final_path, effective_lr_schedule)
     tqdm.write(f"🎉 Training complete! Final model: {final_path}")
 
 

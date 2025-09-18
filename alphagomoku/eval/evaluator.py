@@ -17,6 +17,8 @@ class Evaluator:
 
     def play_game(self, player1_sims: int, player2_sims: int) -> Dict:
         """Play a single game between two MCTS configurations"""
+        if player1_sims <= 0 or player2_sims <= 0:
+            raise ValueError("Simulation counts must be positive")
         self.env.reset()
 
         config1 = MCTSConfig(num_simulations=player1_sims)

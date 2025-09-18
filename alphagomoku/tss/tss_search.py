@@ -34,6 +34,14 @@ class TSSSearcher:
 
     def search(self, position: Position, depth: int, time_cap_ms: int) -> TSSResult:
         """Perform TSS search."""
+        if depth is None or depth < 0:
+            raise ValueError("depth must be >= 0")
+        if time_cap_ms is None or time_cap_ms <= 0:
+            raise ValueError("time_cap_ms must be > 0")
+        # Validate board values
+        import numpy as np
+        if not np.all(np.isin(position.board, [-1, 0, 1])):
+            raise ValueError("Invalid board values in TSS position")
         self.nodes_visited = 0
         self.start_time = time.time() * 1000
         self.time_cap_ms = time_cap_ms

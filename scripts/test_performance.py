@@ -55,7 +55,7 @@ def test_performance():
     env.reset()
     
     start_time = time.time()
-    action_probs, visits = mcts.search(env.board, temperature=1.0)
+    action_probs, _ = mcts.search(env.board, temperature=1.0)
     search_time = time.time() - start_time
     
     print(f"   ✓ MCTS search ({test_sims} sims) in {search_time:.3f}s")
@@ -69,7 +69,7 @@ def test_performance():
     for i in range(num_searches):
         env.reset()
         start_time = time.time()
-        action_probs, visits = mcts.search(env.board, temperature=1.0)
+        action_probs, _ = mcts.search(env.board, temperature=1.0)
         search_time = time.time() - start_time
         total_time += search_time
         print(f"   Search {i+1}: {search_time:.3f}s")

@@ -168,7 +168,8 @@ from alphagomoku.mcts.mcts import MCTS
 # Profile MCTS performance
 mcts = MCTS(model, env, batch_size=32)
 start = time.time()
-policy, visits = mcts.search(board)
+policy, value = mcts.search(board)
+visits = mcts.last_visit_counts
 print(f"Search time: {time.time() - start:.3f}s")
 ```
 
