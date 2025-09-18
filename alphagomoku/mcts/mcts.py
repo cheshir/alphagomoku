@@ -220,10 +220,25 @@ class MCTS:
             raise ValueError("state contains invalid stone values")
         state = state.astype(np.int8, copy=False)
 
-        # Create or reuse root node
-        if not reuse_tree or self.root is None:
+        winner = self._detect_winner_full(state, self.env.board_size)
+        board_full = not (state == 0).any()
+
+        if winner != 0 or board_full:
             self.root = MCTSNode(state, board_size=self.env.board_size)
-        
+            action_probs = np.zeros(self.env.board_size * self.env.board_size)
+            value = self._terminal_value(state, winner)
+            self.last_visit_counts = np.array([], dtype=float)
+            return action_probs, value
+
+        # Create or reuse root node only when state matches
+        if (
+            not reuse_tree
+            or self.root is None
+            or self.root.state.shape != state.shape
+            or not np.array_equal(self.root.state, state)
+        ):
+            self.root = MCTSNode(state, board_size=self.env.board_size)
+
         # Use batching when enabled and model is on accelerated device
         device = next(self.model.parameters()).device
         use_batched = self.config.batch_size > 1
@@ -240,18 +255,28 @@ class MCTS:
         if len(children_items) == 0:
             actions = np.array([], dtype=int)
             visits = np.array([], dtype=float)
+            probs = np.array([], dtype=float)
         else:
-            actions = np.array([action for action, _ in children_items])
-            visits = np.array([child.visit_count for _, child in children_items])
+            actions = np.array([action for action, _ in children_items], dtype=int)
+            visits = np.array([child.visit_count for _, child in children_items], dtype=float)
 
-        if temperature <= self.config.deterministic_threshold:
-            # Deterministic selection
-            probs = np.zeros(len(visits))
-            probs[np.argmax(visits)] = self.config.win_value
-        else:
-            # Temperature-based sampling
-            visits_temp = visits ** (self.config.win_value / temperature)
-            probs = visits_temp / visits_temp.sum()
+            if temperature <= self.config.deterministic_threshold:
+                # Deterministic selection
+                probs = np.zeros(len(visits), dtype=float)
+                if len(visits) > 0:
+                    probs[np.argmax(visits)] = self.config.win_value
+            else:
+                # Temperature-based sampling with safeguards for zero totals
+                exponent = self.config.win_value / max(temperature, 1e-8)
+                visits_temp = np.power(visits, exponent, dtype=float)
+                total = float(visits_temp.sum())
+                if len(visits_temp) == 0:
+                    probs = np.array([], dtype=float)
+                elif total <= 0.0 or not np.isfinite(total):
+                    # Fall back to uniform distribution over explored moves
+                    probs = np.full(len(visits_temp), 1.0 / len(visits_temp), dtype=float)
+                else:
+                    probs = visits_temp / total
 
         # Convert to full action space
         action_probs = np.zeros(self.env.board_size * self.env.board_size)
@@ -547,3 +572,48 @@ class MCTS:
             if count >= self.config.winning_sequence_length:
                 return True, int(player)
         return False, 0
+
+    def _detect_winner_full(self, state: np.ndarray, board_size: int) -> int:
+        directions = [(0, 1), (1, 0), (1, 1), (1, -1)]
+
+        for r in range(board_size):
+            for c in range(board_size):
+                player = state[r, c]
+                if player == 0:
+                    continue
+
+                for dr, dc in directions:
+                    prev_r, prev_c = r - dr, c - dc
+                    if (
+                        0 <= prev_r < board_size
+                        and 0 <= prev_c < board_size
+                        and state[prev_r, prev_c] == player
+                    ):
+                        continue
+
+                    count = 1
+                    rr, cc = r + dr, c + dc
+                    while (
+                        0 <= rr < board_size
+                        and 0 <= cc < board_size
+                        and state[rr, cc] == player
+                    ):
+                        count += 1
+                        if count >= self.config.winning_sequence_length:
+                            return int(player)
+                        rr += dr
+                        cc += dc
+
+        return 0
+
+    def _terminal_value(self, state: np.ndarray, winner: int) -> float:
+        if winner == 0:
+            return self.config.draw_value
+
+        stones = int(np.sum(state != 0))
+        current_player = 1 if stones % 2 == 0 else -1
+        return (
+            self.config.win_value
+            if winner == current_player
+            else self.config.loss_value
+        )

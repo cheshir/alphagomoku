@@ -75,6 +75,19 @@ class Trainer:
                 h, w = s.shape
                 board_h = board_h or h
                 board_w = board_w or w
+                if not np.all(np.isfinite(s)):
+                    raise ValueError("Non-finite values in state board")
+                expected_board_model = getattr(self.model, "board_size", None)
+                expected_board_policy = int(np.sqrt(data.policy.size))
+                expected_board = (
+                    expected_board_model
+                    if expected_board_model
+                    else expected_board_policy
+                )
+                if h != expected_board or w != expected_board:
+                    raise ValueError("State board size does not match model")
+                if data.policy.size != h * w:
+                    raise ValueError("Policy length does not match board size")
                 current_player = getattr(data, "current_player", 1)
                 last_move = getattr(data, "last_move", None)
                 own = (s == current_player).astype(np.float32)
@@ -88,6 +101,20 @@ class Trainer:
                 pattern = np.zeros_like(s, dtype=np.float32)
                 states_list.append(np.stack([own, opp, last, side, pattern]))
             elif s.ndim == 3 and s.shape[0] == 5:
+                if not np.all(np.isfinite(s)):
+                    raise ValueError("Non-finite values in state tensor")
+                expected_board_model = getattr(self.model, "board_size", None)
+                expected_board_policy = int(np.sqrt(data.policy.size))
+                expected_board = (
+                    expected_board_model
+                    if expected_board_model
+                    else expected_board_policy
+                )
+                if s.shape[1] != expected_board or s.shape[2] != expected_board:
+                    raise ValueError("State board size does not match model")
+                board_area = s.shape[1] * s.shape[2]
+                if data.policy.size != board_area:
+                    raise ValueError("Policy length does not match board size")
                 states_list.append(s.astype(np.float32))
             else:
                 raise ValueError("Invalid state shape in training batch")

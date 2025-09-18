@@ -143,7 +143,12 @@ class DataBuffer:
 
             augmented.append(
                 SelfPlayData(
-                    state=rot_state, policy=rot_policy.flatten(), value=example.value
+                    state=rot_state,
+                    policy=rot_policy.flatten(),
+                    value=example.value,
+                    current_player=example.current_player,
+                    last_move=example.last_move,
+                    metadata=dict(example.metadata) if example.metadata else {},
                 )
             )
 
@@ -153,7 +158,12 @@ class DataBuffer:
 
             augmented.append(
                 SelfPlayData(
-                    state=flip_state, policy=flip_policy.flatten(), value=example.value
+                    state=flip_state,
+                    policy=flip_policy.flatten(),
+                    value=example.value,
+                    current_player=example.current_player,
+                    last_move=example.last_move,
+                    metadata=dict(example.metadata) if example.metadata else {},
                 )
             )
 
@@ -181,7 +191,10 @@ class DataBuffer:
         return SelfPlayData(
             state=aug_state,
             policy=aug_policy.flatten(),
-            value=example.value
+            value=example.value,
+            current_player=example.current_player,
+            last_move=example.last_move,
+            metadata=dict(example.metadata) if example.metadata else {},
         )
 
     def sample_batch(self, batch_size: int) -> List[SelfPlayData]:

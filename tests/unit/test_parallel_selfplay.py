@@ -41,7 +41,8 @@ class TestWorkerProcess:
                 adaptive_sims=True,
                 batch_size=2,
                 num_games=2,
-                worker_id=0
+                worker_id=0,
+                model_config={"board_size": 9, "channels": 8, "num_blocks": 1}
             )
 
             # Should return game data
@@ -56,6 +57,9 @@ class TestWorkerProcess:
 
         with patch('alphagomoku.selfplay.parallel.GomokuNet') as mock_net_class:
             mock_model = Mock()
+            mock_model.load_state_dict.return_value = Mock(
+                missing_keys=[], unexpected_keys=[]
+            )
             mock_net_class.return_value = mock_model
 
             with patch('alphagomoku.selfplay.parallel.SelfPlayWorker') as mock_worker_class:
@@ -70,11 +74,14 @@ class TestWorkerProcess:
                     adaptive_sims=False,
                     batch_size=1,
                     num_games=1,
-                    worker_id=0
+                    worker_id=0,
+                    model_config={"board_size": 9, "channels": 8, "num_blocks": 1}
                 )
 
                 # Model should be created and loaded
-                mock_net_class.assert_called_once_with(board_size=9)
+                mock_net_class.assert_called_once_with(
+                    board_size=9, channels=8, num_blocks=1
+                )
                 mock_model.load_state_dict.assert_called_once()
                 mock_model.eval.assert_called_once()
 
@@ -95,6 +102,9 @@ class TestWorkerProcess:
 
         with patch('alphagomoku.selfplay.parallel.GomokuNet') as mock_net_class:
             mock_model = Mock()
+            mock_model.load_state_dict.return_value = Mock(
+                missing_keys=[], unexpected_keys=[]
+            )
             mock_net_class.return_value = mock_model
 
             with patch('alphagomoku.selfplay.parallel.SelfPlayWorker') as mock_worker_class:
@@ -109,7 +119,8 @@ class TestWorkerProcess:
                     adaptive_sims=False,
                     batch_size=1,
                     num_games=1,
-                    worker_id=0
+                    worker_id=0,
+                    model_config={"board_size": 9, "channels": 8, "num_blocks": 1}
                 )
 
                 # CPU tensors should have .to('cpu') called
@@ -158,13 +169,18 @@ class TestParallelSelfPlay:
             )
         ]
 
-        with patch('alphagomoku.selfplay.parallel.worker_process', return_value=mock_data):
+        with patch('alphagomoku.selfplay.parallel.SelfPlayWorker') as mock_worker_class:
+            mock_worker = Mock()
+            mock_worker.generate_game.return_value = mock_data
+            mock_worker_class.return_value = mock_worker
+
             # Generate data with num_workers=1 (sequential)
             parallel.num_workers = 1
             data = parallel.generate_data(num_games=2)
 
             assert len(data) == 2
             assert all(isinstance(d, SelfPlayData) for d in data)
+            assert mock_worker.generate_game.call_count == 2
 
     def test_generate_data_parallel(self, setup_parallel):
         """Test data generation in parallel mode."""
@@ -182,7 +198,7 @@ class TestParallelSelfPlay:
 
         # Mock multiprocessing pool
         with patch('multiprocessing.Pool') as mock_pool_class:
-            mock_pool = Mock()
+            mock_pool = MagicMock()
             mock_pool.starmap.return_value = [mock_data, mock_data]  # 2 workers
             mock_pool.__enter__.return_value = mock_pool
             mock_pool.__exit__.return_value = None
@@ -201,7 +217,7 @@ class TestParallelSelfPlay:
         parallel.num_workers = 3
 
         with patch('multiprocessing.Pool') as mock_pool_class:
-            mock_pool = Mock()
+            mock_pool = MagicMock()
             mock_pool.starmap.return_value = [[], [], []]  # 3 workers
             mock_pool.__enter__.return_value = mock_pool
             mock_pool.__exit__.return_value = None
@@ -213,19 +229,23 @@ class TestParallelSelfPlay:
             worker_args = args[1]
 
             # Check game distribution (should be roughly equal)
-            total_games = sum(args[5] for args in worker_args)  # num_games is 6th argument
+            total_games = sum(args[5] for args in worker_args)
             assert total_games == 10
 
             # Each worker should get at least 3 games (10/3 = 3.33)
             for args in worker_args:
                 assert args[5] >= 3
+                config = args[-1]
+                assert config["board_size"] == 9
+                assert config["channels"] == 8
+                assert config["num_blocks"] == 1
 
     def test_model_state_dict_preparation(self, setup_parallel):
         """Test model state dict preparation for workers."""
         model, parallel = setup_parallel
 
         with patch('multiprocessing.Pool') as mock_pool_class:
-            mock_pool = Mock()
+            mock_pool = MagicMock()
             mock_pool.starmap.return_value = [[]]
             mock_pool.__enter__.return_value = mock_pool
             mock_pool.__exit__.return_value = None
@@ -234,19 +254,23 @@ class TestParallelSelfPlay:
             parallel.generate_data(num_games=1)
 
             args, _ = mock_pool.starmap.call_args
-            worker_args = args[1][0]  # First worker's args
+            worker_args = args[1][0]
 
             # Model state dict should be first argument
             model_state_dict = worker_args[0]
             assert isinstance(model_state_dict, dict)
             assert len(model_state_dict) > 0
+            config = worker_args[-1]
+            assert config["board_size"] == 9
+            assert config["channels"] == 8
+            assert config["num_blocks"] == 1
 
     def test_error_handling_worker_failure(self, setup_parallel):
         """Test error handling when worker process fails."""
         model, parallel = setup_parallel
 
         with patch('multiprocessing.Pool') as mock_pool_class:
-            mock_pool = Mock()
+            mock_pool = MagicMock()
             mock_pool.starmap.side_effect = RuntimeError("Worker failed")
             mock_pool.__enter__.return_value = mock_pool
             mock_pool.__exit__.return_value = None
@@ -264,7 +288,7 @@ class TestParallelSelfPlay:
 
         with patch('multiprocessing.cpu_count', return_value=4):
             with patch('multiprocessing.Pool') as mock_pool_class:
-                mock_pool = Mock()
+                mock_pool = MagicMock()
                 mock_pool.starmap.return_value = [[] for _ in range(4)]
                 mock_pool.__enter__.return_value = mock_pool
                 mock_pool.__exit__.return_value = None
@@ -281,7 +305,7 @@ class TestParallelSelfPlay:
         parallel.adaptive_sims = True
 
         with patch('multiprocessing.Pool') as mock_pool_class:
-            mock_pool = Mock()
+            mock_pool = MagicMock()
             mock_pool.starmap.return_value = [[]]
             mock_pool.__enter__.return_value = mock_pool
             mock_pool.__exit__.return_value = None
@@ -293,7 +317,11 @@ class TestParallelSelfPlay:
             worker_args = args[1][0]
 
             # adaptive_sims should be 4th argument (index 3)
-            assert worker_args[3] == True
+            assert worker_args[3] is True
+            config = worker_args[-1]
+            assert config["board_size"] == 9
+            assert config["channels"] == 8
+            assert config["num_blocks"] == 1
 
     def test_memory_efficiency(self, setup_parallel):
         """Test memory efficiency considerations."""
@@ -301,7 +329,7 @@ class TestParallelSelfPlay:
 
         # Test with large number of games
         with patch('multiprocessing.Pool') as mock_pool_class:
-            mock_pool = Mock()
+            mock_pool = MagicMock()
             # Simulate memory-efficient batch processing
             mock_pool.starmap.return_value = [[] for _ in range(parallel.num_workers)]
             mock_pool.__enter__.return_value = mock_pool
@@ -396,7 +424,7 @@ class TestParallelSelfPlayIntegration:
         model = GomokuNet(board_size=5, num_blocks=1, channels=4)
 
         with patch('multiprocessing.Pool') as mock_pool_class:
-            mock_pool = Mock()
+            mock_pool = MagicMock()
             mock_pool.starmap.return_value = [[]]
             mock_pool.__enter__.return_value = mock_pool
             mock_pool.__exit__.return_value = None

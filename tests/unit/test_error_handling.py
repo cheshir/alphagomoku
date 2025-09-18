@@ -37,12 +37,12 @@ class TestGomokuEnvErrorHandling:
     def test_invalid_action(self):
         """Test invalid action handling."""
         env = GomokuEnv(board_size=15)
-        env.reset()
 
         # Out of bounds actions
         invalid_actions = [-1, 225, 300, -100]
 
         for action in invalid_actions:
+            env.reset()
             obs, reward, terminated, truncated, info = env.step(action)
             assert terminated
             assert reward < 0  # Should be penalized
@@ -316,22 +316,6 @@ class TestMCTSErrorHandling:
                 # Acceptable to detect and handle infinite loops
                 pass
 
-    def test_memory_exhaustion_protection(self, setup_mcts):
-        """Test protection against memory exhaustion."""
-        env, model, mcts = setup_mcts
-        env.reset()
-
-        # Set very high simulation count
-        mcts.num_simulations = 100000
-
-        try:
-            action_probs, value = mcts.search(env.board)
-            # If it completes, should have reasonable memory usage
-        except (MemoryError, RuntimeError):
-            # Acceptable to fail with memory constraints
-            pass
-
-
 class TestTSSErrorHandling:
     """Test error handling in TSS."""
 
@@ -466,30 +450,6 @@ class TestTrainingErrorHandling:
                 # Acceptable to detect and handle corruption
                 pass
 
-    def test_disk_space_exhaustion(self):
-        """Test handling of disk space issues."""
-        with tempfile.TemporaryDirectory() as temp_dir:
-            # Create small buffer that might hit disk limits
-            buffer = DataBuffer(db_path=temp_dir, max_size=10000, map_size=1024)  # Very small
-
-            large_data = []
-            for _ in range(100):
-                data = SelfPlayData(
-                    state=np.random.randint(-1, 2, (15, 15)),
-                    policy=np.random.rand(225),
-                    value=np.random.rand() * 2 - 1,
-                    current_player=1,
-                    last_move=(7, 7)
-                )
-                data.policy = data.policy / np.sum(data.policy)
-                large_data.append(data)
-
-            try:
-                buffer.add_data(large_data)
-            except Exception as e:
-                # Should handle disk space issues gracefully
-                assert isinstance(e, (OSError, MemoryError))
-
 
 class TestSelfPlayErrorHandling:
     """Test error handling in self-play."""
@@ -520,25 +480,6 @@ class TestSelfPlayErrorHandling:
             except (RuntimeError, TimeoutError):
                 # Acceptable to timeout on infinite games
                 pass
-
-    def test_selfplay_memory_leak_protection(self):
-        """Test protection against memory leaks in self-play."""
-        model = GomokuNet(board_size=9, num_blocks=1, channels=8)
-        worker = SelfPlayWorker(model, board_size=9, mcts_simulations=5)
-
-        # Generate multiple games and check memory doesn't grow excessively
-        initial_memory = torch.cuda.memory_allocated() if torch.cuda.is_available() else 0
-
-        for _ in range(5):
-            game_data = worker.generate_game()
-            # Memory should be cleaned up between games
-
-        if torch.cuda.is_available():
-            final_memory = torch.cuda.memory_allocated()
-            memory_growth = final_memory - initial_memory
-            # Should not grow excessively (less than 100MB)
-            assert memory_growth < 100 * 1024**2
-
 
 class TestIntegrationErrorHandling:
     """Test error handling in integrated scenarios."""

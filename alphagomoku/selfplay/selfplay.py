@@ -1,5 +1,5 @@
-from dataclasses import dataclass
-from typing import List, NamedTuple, Tuple
+from dataclasses import dataclass, field
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import torch
@@ -12,11 +12,14 @@ from ..search import UnifiedSearch
 
 @dataclass
 class SelfPlayData:
-    """Single training example from self-play"""
+    """Single training example from self-play."""
 
-    state: np.ndarray  # Board state (5, 15, 15)
-    policy: np.ndarray  # MCTS policy (225,)
+    state: np.ndarray  # Board state (5, board_size, board_size)
+    policy: np.ndarray  # MCTS policy (board_size * board_size,)
     value: float  # Game outcome from this position
+    current_player: int = 1  # Player perspective of this sample
+    last_move: Optional[Tuple[int, int]] = None  # Last move coordinates if known
+    metadata: Dict[str, Any] = field(default_factory=dict)  # Optional extra info
 
 
 class SelfPlayWorker:
@@ -77,7 +80,14 @@ class SelfPlayWorker:
             # Store training example (value will be filled after game ends)
             game_data.append(
                 SelfPlayData(
-                    state=state_tensor.numpy(), policy=policy, value=0.0  # Placeholder
+                    state=state_tensor.numpy(),
+                    policy=policy,
+                    value=0.0,  # Placeholder until game finishes
+                    current_player=self.env.current_player,
+                    last_move=tuple(int(x) for x in self.env.last_move.tolist())
+                    if self.env.last_move.size == 2
+                    else None,
+                    metadata={"move_index": move_count},
                 )
             )
 
