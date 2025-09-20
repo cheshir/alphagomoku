@@ -6,8 +6,10 @@ from dataclasses import dataclass
 
 from ..mcts.mcts import MCTS
 from ..mcts.config import MCTSConfig
-from ..tss import tss_search, Position as TSSPosition
-from ..endgame import endgame_search, EndgamePosition, should_use_endgame_solver
+from ..tss import Position as TSSPosition
+from ..tss.tss_search import TSSSearcher
+from ..endgame import EndgamePosition, should_use_endgame_solver
+from ..endgame.endgame_solver import EndgameSolver
 from ..env.gomoku_env import GomokuEnv
 
 
@@ -44,12 +46,20 @@ class UnifiedSearch:
         mcts_config = MCTSConfig(
             num_simulations=config['mcts_sims'],
             cpuct=config['cpuct'],
-            batch_size=config.get('batch_size', 32)
+            batch_size=config.get('batch_size', 64)
         )
         self.mcts = MCTS(model=model, env=env, config=mcts_config)
 
         self.tss_config = config['tss']
         self.endgame_config = config['endgame']
+        self.tss_searcher = (
+            TSSSearcher(self.env.board_size)
+            if self.tss_config.get('enabled', False)
+            else None
+        )
+        self.endgame_solver = (
+            EndgameSolver() if self.endgame_config.get('enabled', False) else None
+        )
 
     def search(self, state: np.ndarray, temperature: float = 1.0,
                reuse_tree: bool = False) -> SearchResult:
@@ -85,8 +95,11 @@ class UnifiedSearch:
         )
 
         # 1. Try endgame solver first
-        if should_use_endgame_solver(endgame_position, self.difficulty):
-            result = endgame_search(
+        if (
+            self.endgame_solver is not None
+            and should_use_endgame_solver(endgame_position, self.difficulty)
+        ):
+            result = self.endgame_solver.search(
                 endgame_position,
                 max_depth=self.endgame_config['max_depth'],
                 time_limit=self.endgame_config['time_limit']
@@ -96,8 +109,10 @@ class UnifiedSearch:
                 return self._create_endgame_result(result, state)
 
         # 2. Try TSS for tactical sequences
-        if self.tss_config['enabled']:
-            tss_result = tss_search(
+        if self.tss_searcher is not None:
+            if self.tss_searcher.board_size != self.env.board_size:
+                self.tss_searcher = TSSSearcher(self.env.board_size)
+            tss_result = self.tss_searcher.search(
                 tss_position,
                 depth=self.tss_config['depth'],
                 time_cap_ms=self.tss_config['time_cap_ms']

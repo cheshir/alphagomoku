@@ -1,5 +1,6 @@
 import os
 import pickle
+import warnings
 from typing import Iterator, List, Tuple
 
 import lmdb
@@ -24,6 +25,7 @@ class DataBuffer:
         self.env = lmdb.open(db_path, map_size=map_size)  # Default 64GB
         self.size = 0
         self.write_idx = 0
+        self._compat_warning_emitted = False
 
         # Load existing size
         with self.env.begin() as txn:
@@ -136,19 +138,20 @@ class DataBuffer:
         size = state.shape[-1]  # Board size from state shape
         policy = example.policy.reshape(size, size)
 
+        current_player, last_move, metadata = self._extract_context(example)
+
         for i in range(4):  # 4 rotations
             # Rotate state (all 5 channels)
             rot_state = np.rot90(state, i, axes=(1, 2))
             rot_policy = np.rot90(policy, i)
-
             augmented.append(
                 SelfPlayData(
                     state=rot_state,
                     policy=rot_policy.flatten(),
                     value=example.value,
-                    current_player=example.current_player,
-                    last_move=example.last_move,
-                    metadata=dict(example.metadata) if example.metadata else {},
+                    current_player=current_player,
+                    last_move=last_move,
+                    metadata=dict(metadata),
                 )
             )
 
@@ -161,9 +164,9 @@ class DataBuffer:
                     state=flip_state,
                     policy=flip_policy.flatten(),
                     value=example.value,
-                    current_player=example.current_player,
-                    last_move=example.last_move,
-                    metadata=dict(example.metadata) if example.metadata else {},
+                    current_player=current_player,
+                    last_move=last_move,
+                    metadata=dict(metadata),
                 )
             )
 
@@ -188,14 +191,62 @@ class DataBuffer:
             aug_state = np.flip(aug_state, axis=2)
             aug_policy = np.flip(aug_policy, axis=1)
 
+        current_player, last_move, metadata = self._extract_context(example)
         return SelfPlayData(
             state=aug_state,
             policy=aug_policy.flatten(),
             value=example.value,
-            current_player=example.current_player,
-            last_move=example.last_move,
-            metadata=dict(example.metadata) if example.metadata else {},
+            current_player=current_player,
+            last_move=last_move,
+            metadata=dict(metadata),
         )
+
+    @staticmethod
+    def _infer_current_player(state: np.ndarray) -> int:
+        if state.ndim == 2:
+            stones = int(np.count_nonzero(state))
+            return 1 if stones % 2 == 0 else -1
+        if state.ndim == 3 and state.shape[0] == 5:
+            # Channel 3 typically encodes side to move
+            side_channel = state[3]
+            if np.allclose(side_channel, 1.0):
+                # Assume channel 0 is current player's stones
+                own = state[0]
+                opp = state[1]
+                stones = int(np.count_nonzero(own) + np.count_nonzero(opp))
+                return 1 if stones % 2 == 0 else -1
+        # Fallback heuristic
+        stones = int(np.count_nonzero(state))
+        return 1 if stones % 2 == 0 else -1
+
+    def _extract_context(
+        self, example: SelfPlayData
+    ) -> tuple[int, tuple[int, int] | None, dict]:
+        has_current = hasattr(example, "current_player")
+        has_last = hasattr(example, "last_move")
+        has_metadata = hasattr(example, "metadata")
+
+        if not (has_current and has_last and has_metadata) and not self._compat_warning_emitted:
+            warnings.warn(
+                "Detected legacy SelfPlayData entries without context fields. "
+                "Using heuristic defaults; please regenerate old buffers if possible.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+            self._compat_warning_emitted = True
+
+        current_player = getattr(example, "current_player", None)
+        if current_player is None:
+            current_player = self._infer_current_player(example.state)
+
+        last_move = getattr(example, "last_move", None)
+        metadata = getattr(example, "metadata", None)
+        if metadata is None:
+            metadata = {}
+        elif not isinstance(metadata, dict):
+            raise ValueError("SelfPlayData metadata must be a dict")
+
+        return current_player, last_move, metadata
 
     def sample_batch(self, batch_size: int) -> List[SelfPlayData]:
         """Sample random batch from buffer with on-demand augmentation"""

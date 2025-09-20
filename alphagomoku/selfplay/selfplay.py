@@ -56,6 +56,7 @@ class SelfPlayWorker:
         self.mcts.root = None  # Reset tree
         game_data = []
         move_count = 0
+        last_confidence = 0.0
 
         while not self.env.game_over:
             if max_moves is not None and move_count >= max_moves:
@@ -66,7 +67,9 @@ class SelfPlayWorker:
             # Adaptive simulation count
             if self.adaptive_sims and self.adaptive_simulator:
                 sims = self.adaptive_simulator.get_simulations(
-                    move_count, self.env.board
+                    move_count,
+                    self.env.board,
+                    confidence=last_confidence,
                 )
                 self.mcts.num_simulations = sims
 
@@ -77,6 +80,8 @@ class SelfPlayWorker:
             # Use unified search for enhanced tactical play
             search_result = self.search.search(self.env.board, temperature, reuse_tree)
             policy = search_result.action_probs
+            if self.adaptive_sims and self.adaptive_simulator:
+                last_confidence = self.adaptive_simulator.get_confidence(policy)
             # Store training example (value will be filled after game ends)
             game_data.append(
                 SelfPlayData(

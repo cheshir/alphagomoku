@@ -153,6 +153,7 @@ class MCTS:
 
         self.config = base_config
         self.root: Optional[MCTSNode] = None
+        self._last_temperature: Optional[float] = None
 
         # Batched evaluation
         self.eval_queue = deque()
@@ -202,6 +203,13 @@ class MCTS:
         reuse_tree = (
             reuse_tree if reuse_tree is not None else self.config.enable_tree_reuse
         )
+
+        if (
+            reuse_tree
+            and self._last_temperature is not None
+            and not math.isclose(temperature, self._last_temperature, rel_tol=0.05, abs_tol=0.05)
+        ):
+            reuse_tree = False
 
         if self.config.num_simulations < 0:
             raise ValueError("num_simulations must be non-negative")
@@ -285,6 +293,7 @@ class MCTS:
 
         self.last_visit_counts = visits.copy()
         root_value = self.root.value() if self.root is not None else 0.0
+        self._last_temperature = float(temperature)
         return action_probs, float(root_value)
 
     def _simulate_single(self):

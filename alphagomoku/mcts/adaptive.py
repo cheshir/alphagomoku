@@ -10,9 +10,9 @@ class AdaptiveSimulator:
 
     def __init__(
         self,
-        early_sims: Tuple[int, int] = (50, 150),
-        mid_sims: Tuple[int, int] = (200, 400),
-        late_sims: Tuple[int, int] = (50, 100),
+        early_sims: Tuple[int, int] = (48, 130),
+        mid_sims: Tuple[int, int] = (160, 280),
+        late_sims: Tuple[int, int] = (40, 90),
         early_moves: int = 10,
         late_moves: int = 180,
     ):
@@ -23,9 +23,14 @@ class AdaptiveSimulator:
         self.late_moves = late_moves
 
     def get_simulations(
-        self, move_count: int, board_state: np.ndarray, confidence: float = 0.0
+        self,
+        move_count: int,
+        board_state: np.ndarray,
+        confidence: float | None = None,
     ) -> int:
         """Get adaptive simulation count based on game phase and confidence"""
+
+        confidence = 0.0 if confidence is None else float(confidence)
 
         # Game phase detection
         if move_count < self.early_moves:
@@ -38,13 +43,20 @@ class AdaptiveSimulator:
             # Mid game: more simulations
             base_sims = np.random.randint(*self.mid_sims)
 
-        # Adjust based on confidence (high confidence = fewer sims needed)
-        if confidence > 0.8:
-            base_sims = int(base_sims * 0.5)
-        elif confidence > 0.6:
-            base_sims = int(base_sims * 0.7)
+        # Reduce search effort when the policy distribution is confident
+        if confidence >= 0.9:
+            base_sims = max(int(base_sims * 0.45), self.early_sims[0])
+        elif confidence >= 0.75:
+            base_sims = int(base_sims * 0.65)
+        elif confidence >= 0.6:
+            base_sims = int(base_sims * 0.8)
 
-        return max(base_sims, 25)  # Minimum 25 simulations
+        # Encourage quicker resolution when only a handful of moves remain
+        empty_cells = int(np.count_nonzero(board_state == 0))
+        if empty_cells < 20:
+            base_sims = max(int(base_sims * 0.8), self.late_sims[0])
+
+        return max(base_sims, 32)
 
     def get_confidence(self, policy: np.ndarray) -> float:
         """Estimate confidence from policy distribution"""

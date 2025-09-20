@@ -206,7 +206,7 @@ def main():
     parser.add_argument('--resume', type=str, help='Resume from checkpoint (use "auto" for latest)')
     parser.add_argument('--adaptive-sims', action='store_true', help='Use adaptive simulation scheduling')
     parser.add_argument('--parallel-workers', type=int, default=1, help='Number of parallel selfplay workers')
-    parser.add_argument('--batch-size-mcts', type=int, default=32, help='MCTS batch size for neural network evaluation')
+    parser.add_argument('--batch-size-mcts', type=int, default=64, help='MCTS batch size for neural network evaluation')
     parser.add_argument('--difficulty', type=str, choices=['easy', 'medium', 'strong'], default='medium',
                         help='Training difficulty (affects TSS/endgame solver usage)')
 

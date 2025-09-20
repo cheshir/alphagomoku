@@ -9,7 +9,7 @@ class MCTSConfig:
     # Core MCTS parameters
     cpuct: float = 1.8
     num_simulations: int = 800
-    batch_size: int = 32
+    batch_size: int = 64
 
     # Neural network evaluation
     policy_epsilon: float = 1e-8  # Small value to prevent division by zero
