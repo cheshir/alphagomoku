@@ -239,6 +239,40 @@ class TestMCTSBatchProcessing:
         mcts = MCTS(model, env, num_simulations=100, batch_size=8)
         return env, model, mcts
 
+    def test_batched_handles_terminal_leaves(self):
+        """Ensure batched simulations advance when encountering terminal leaves."""
+
+        board = np.array(
+            [
+                [1, -1, 1, -1, 1],
+                [-1, 1, -1, 1, -1],
+                [1, -1, -1, -1, 1],
+                [-1, 1, -1, 1, -1],
+                [1, -1, 1, 0, 1],
+            ],
+            dtype=np.int8,
+        )
+
+        env = GomokuEnv(board_size=5)
+        env.board = board.copy()
+        env.current_player = 1  # Even number of stones -> first player to move
+        env.last_move = np.array([4, 4], dtype=np.int8)
+        env.game_over = False
+        env.winner = 0
+        env.move_count = int(np.count_nonzero(env.board))
+
+        # Keep channels >= reduction factor in SEBlock to avoid zero-dim warnings
+        model = GomokuNet(board_size=5, num_blocks=1, channels=16)
+        mcts = MCTS(model, env, num_simulations=32, batch_size=4)
+
+        action_probs, value = mcts.search(env.board)
+
+        legal_actions = env.get_legal_actions()
+        assert len(legal_actions) == 1
+        assert np.isclose(action_probs.sum(), 1.0)
+        assert action_probs[legal_actions[0]] == pytest.approx(1.0)
+        assert isinstance(value, (float, int, np.number))
+
     def test_batch_size_configuration(self, setup_batch_mcts):
         """Test batch size configuration."""
         env, model, mcts = setup_batch_mcts

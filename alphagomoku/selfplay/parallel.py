@@ -1,31 +1,37 @@
 """Parallel self-play workers for faster data generation"""
 
 import multiprocessing as mp
-from contextlib import nullcontext
 from typing import List, Optional
+
 from tqdm import tqdm
 
 import torch
 
 from ..model.network import GomokuNet
+from ..utils.debug_logger import DebugLogger, NoOpLogger
 from .selfplay import SelfPlayData, SelfPlayWorker
 
 
-def worker_process(
+_GLOBAL_WORKER: Optional[SelfPlayWorker] = None
+
+
+def _worker_initializer(
     model_state_dict,
     board_size,
     mcts_simulations,
     adaptive_sims,
     batch_size,
-    num_games,
-    worker_id,
-    difficulty="medium",
+    difficulty,
     model_config: Optional[dict] = None,
 ):
-    """Worker process for parallel self-play"""
+    """Initialise a process-local self-play worker reused across tasks."""
+
+    global _GLOBAL_WORKER
+
     model_kwargs = dict(model_config or {})
     model_kwargs.setdefault("board_size", board_size)
     model = GomokuNet(**model_kwargs)
+
     cpu_state = {}
     for key, value in model_state_dict.items():
         if isinstance(value, torch.Tensor):
@@ -47,8 +53,12 @@ def worker_process(
         )
     model.eval()
 
-    # Create worker with unified search support
-    worker = SelfPlayWorker(
+    # Force CPU-only inference in worker processes to avoid MPS/CUDA context issues
+    model = model.cpu()
+    for param in model.parameters():
+        param.data = param.data.cpu()
+
+    _GLOBAL_WORKER = SelfPlayWorker(
         model=model,
         board_size=board_size,
         mcts_simulations=mcts_simulations,
@@ -57,15 +67,29 @@ def worker_process(
         difficulty=difficulty,
     )
 
-    # Generate games
-    all_data = []
-    game_pbar = tqdm(range(num_games), desc=f"Worker {worker_id}", leave=False, unit="game")
-    for i in game_pbar:
-        game_data = worker.generate_game()
-        all_data.extend(game_data)
-        game_pbar.set_postfix({'positions': len(all_data)})
-    game_pbar.close()
-    return all_data
+
+def _play_single_game(task_data) -> List[SelfPlayData]:
+    """Generate a single self-play game via the process-local worker."""
+    game_id, debug_enabled = task_data
+
+    if _GLOBAL_WORKER is None:
+        raise RuntimeError("Worker not initialised before task execution")
+
+    # Create logger instance for this specific task
+    if debug_enabled:
+        logger = DebugLogger(enabled=True)
+    else:
+        logger = NoOpLogger()
+
+    logger.debug(f"Starting game {game_id}")
+
+    try:
+        result = _GLOBAL_WORKER.generate_game()
+        logger.debug(f"Completed game {game_id}, {len(result)} positions")
+        return result
+    except Exception as e:
+        logger.debug(f"ERROR in game {game_id}: {e}")
+        raise
 
 
 class ParallelSelfPlay:
@@ -117,33 +141,7 @@ class ParallelSelfPlay:
             config["num_blocks"] = len(getattr(self.model, "blocks"))
         return config
 
-    def _build_worker_args(
-        self, num_games: int, num_workers: int, model_state_dict: dict, model_config: dict
-    ) -> List[tuple]:
-        games_per_worker = num_games // num_workers
-        remaining_games = num_games % num_workers
-
-        worker_args = []
-        for worker_id in range(num_workers):
-            worker_games = games_per_worker + (1 if worker_id < remaining_games else 0)
-            if worker_games <= 0:
-                continue
-            worker_args.append(
-                (
-                    model_state_dict,
-                    self.board_size,
-                    self.mcts_simulations,
-                    self.adaptive_sims,
-                    self.batch_size,
-                    worker_games,
-                    worker_id,
-                    self.difficulty,
-                    model_config,
-                )
-            )
-        return worker_args
-
-    def generate_data(self, num_games: int) -> List[SelfPlayData]:
+    def generate_data(self, num_games: int, debug: bool = False) -> List[SelfPlayData]:
         """Generate self-play data using sequential or parallel workers."""
 
         if num_games <= 0:
@@ -160,43 +158,47 @@ class ParallelSelfPlay:
                 batch_size=self.batch_size,
                 difficulty=self.difficulty,
             )
-            data: List[SelfPlayData] = []
-            for _ in range(num_games):
-                data.extend(worker.generate_game())
-            return data
+            return worker.generate_batch(num_games)
 
         model_state_dict = self._prepare_model_state_dict()
         model_config = self._extract_model_config()
-        worker_args = self._build_worker_args(
-            num_games, num_workers, model_state_dict, model_config
+
+        init_args = (
+            model_state_dict,
+            self.board_size,
+            self.mcts_simulations,
+            self.adaptive_sims,
+            self.batch_size,
+            self.difficulty,
+            model_config,
         )
 
-        if not worker_args:
-            return []
-
-        pool_obj = mp.Pool(processes=len(worker_args))
-        try:
-            with pool_obj as pool:
-                results = pool.starmap(worker_process, worker_args)
-        except AttributeError:
-            with nullcontext(pool_obj) as pool:
-                try:
-                    results = pool.starmap(worker_process, worker_args)
-                finally:
-                    close = getattr(pool_obj, "close", None)
-                    if callable(close):
-                        close()
-                    join = getattr(pool_obj, "join", None)
-                    if callable(join):
-                        join()
-
+        positions_generated = 0
         all_data: List[SelfPlayData] = []
-        for result in results:
-            all_data.extend(result)
+        
+        with mp.Pool(
+            processes=num_workers, initializer=_worker_initializer, initargs=init_args
+        ) as pool:
+            with tqdm(
+                total=num_games,
+                desc="Self-play",
+                unit="game",
+                leave=False,
+                position=1,
+            ) as game_pbar:
+                # Create tasks with debug flag
+                tasks = [(game_id, debug) for game_id in range(num_games)]
+
+                # Use imap_unordered but without chunking for real-time updates
+                for game_data in pool.imap_unordered(_play_single_game, tasks):
+                    all_data.extend(game_data)
+                    positions_generated += len(game_data)
+                    game_pbar.update(1)
+                    game_pbar.set_postfix({'positions': positions_generated})
 
         return all_data
 
-    def generate_batch(self, num_games: int) -> List[SelfPlayData]:
+    def generate_batch(self, num_games: int, debug: bool = False) -> List[SelfPlayData]:
         """Backward-compatible alias for generate_data."""
 
-        return self.generate_data(num_games)
+        return self.generate_data(num_games, debug)

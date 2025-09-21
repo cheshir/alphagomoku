@@ -60,6 +60,7 @@ class SelfPlayWorker:
 
         while not self.env.game_over:
             if max_moves is not None and move_count >= max_moves:
+                # Force end game if max moves reached
                 break
             # Get current state for neural network
             state_tensor = self._get_state_tensor()

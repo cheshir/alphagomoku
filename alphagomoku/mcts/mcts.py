@@ -337,32 +337,46 @@ class MCTS:
         device = next(self.model.parameters()).device
 
         while sims_done < self.config.num_simulations:
-            leaves = self._collect_leaves_for_batch(sims_done)
+            leaves, terminal_count = self._collect_leaves_for_batch(sims_done)
+
+            if terminal_count:
+                sims_done += terminal_count
+
             if not leaves:
+                # No expandable leaves available; avoid spinning if terminals exhausted budget
+                if terminal_count == 0:
+                    break
                 continue
 
             sims_done += self._process_batch_leaves_optimized(leaves, device)
 
     def _collect_leaves_for_batch(
         self, sims_done: int
-    ) -> List[Tuple[MCTSNode, List[MCTSNode]]]:
-        """Collect leaf nodes for batched evaluation."""
+    ) -> Tuple[List[Tuple[MCTSNode, List[MCTSNode]]], int]:
+        """Collect leaf nodes for batched evaluation.
+
+        Returns a pair ``(leaves, terminal_count)`` where ``leaves`` holds the
+        expandable nodes to evaluate and ``terminal_count`` tracks how many
+        simulations finished immediately at terminal states during collection.
+        """
+
         leaves: List[Tuple[MCTSNode, List[MCTSNode]]] = []
+        terminal_count = 0
 
         while (
             len(leaves) < self.config.batch_size
-            and sims_done + len(leaves) < self.config.num_simulations
+            and sims_done + len(leaves) + terminal_count < self.config.num_simulations
         ):
             leaf_result = self._select_and_process_leaf()
             if leaf_result is None:
                 break
-            elif leaf_result == "terminal_processed":
-                # Terminal node was processed, but doesn't contribute to batch
+            if leaf_result == "terminal_processed":
+                # Count terminal simulations to advance progress even without NN evals
+                terminal_count += 1
                 continue
-            else:
-                leaves.append(leaf_result)
+            leaves.append(leaf_result)
 
-        return leaves
+        return leaves, terminal_count
 
     def _select_and_process_leaf(
         self,
