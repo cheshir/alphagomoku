@@ -8,6 +8,7 @@ from ..mcts.mcts import MCTS
 from ..mcts.config import MCTSConfig
 from ..tss import Position as TSSPosition
 from ..tss.tss_search import TSSSearcher
+from ..tss.tss_config import TSSConfig
 from ..endgame import EndgamePosition, should_use_endgame_solver
 from ..endgame.endgame_solver import EndgameSolver
 from ..env.gomoku_env import GomokuEnv
@@ -35,7 +36,8 @@ class UnifiedSearch:
     3. MCTS (for general position evaluation)
     """
 
-    def __init__(self, model, env: GomokuEnv, difficulty: str = 'medium'):
+    def __init__(self, model, env: GomokuEnv, difficulty: str = 'medium',
+                 tss_config: Optional[TSSConfig] = None):
         self.model = model
         self.env = env
         self.difficulty = difficulty
@@ -50,10 +52,18 @@ class UnifiedSearch:
         )
         self.mcts = MCTS(model=model, env=env, config=mcts_config)
 
-        self.tss_config = config['tss']
+        # Use provided TSSConfig or get from difficulty
+        if tss_config is None:
+            tss_config = TSSConfig.for_inference(difficulty)
+
+        self.tss_config_obj = tss_config
+        self.tss_config = config['tss']  # Keep old dict config for other settings
         self.endgame_config = config['endgame']
         self.tss_searcher = (
-            TSSSearcher(self.env.board_size)
+            TSSSearcher(
+                self.env.board_size,
+                aggressive_offense=tss_config.aggressive_offense
+            )
             if self.tss_config.get('enabled', False)
             else None
         )
@@ -111,7 +121,10 @@ class UnifiedSearch:
         # 2. Try TSS for tactical sequences
         if self.tss_searcher is not None:
             if self.tss_searcher.board_size != self.env.board_size:
-                self.tss_searcher = TSSSearcher(self.env.board_size)
+                self.tss_searcher = TSSSearcher(
+                    self.env.board_size,
+                    aggressive_offense=self.tss_config_obj.aggressive_offense
+                )
             tss_result = self.tss_searcher.search(
                 tss_position,
                 depth=self.tss_config['depth'],
@@ -154,7 +167,8 @@ class UnifiedSearch:
                 'tss': {
                     'enabled': False,
                     'depth': 2,
-                    'time_cap_ms': 30
+                    'time_cap_ms': 30,
+                    'aggressive_offense': False
                 },
                 'endgame': {
                     'enabled': False,
@@ -168,7 +182,8 @@ class UnifiedSearch:
                 'tss': {
                     'enabled': True,
                     'depth': 4,
-                    'time_cap_ms': 100
+                    'time_cap_ms': 100,
+                    'aggressive_offense': True
                 },
                 'endgame': {
                     'enabled': True,
@@ -176,13 +191,14 @@ class UnifiedSearch:
                     'time_limit': 0.3
                 }
             },
-            'strong': {
+            'hard': {
                 'mcts_sims': 1600,
                 'cpuct': 1.8,
                 'tss': {
                     'enabled': True,
                     'depth': 6,
-                    'time_cap_ms': 300
+                    'time_cap_ms': 300,
+                    'aggressive_offense': True
                 },
                 'endgame': {
                     'enabled': True,
@@ -192,6 +208,9 @@ class UnifiedSearch:
             }
         }
 
+        # Map 'strong' to 'hard' for backward compatibility
+        if difficulty == 'strong':
+            difficulty = 'hard'
         return configs.get(difficulty, configs['medium'])
 
     def _get_last_move(self, state: np.ndarray) -> Optional[Tuple[int, int]]:

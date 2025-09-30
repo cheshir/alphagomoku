@@ -25,6 +25,7 @@ export const useGameStore = defineStore('game', () => {
   const debugInfo = ref<DebugInfo | null>(null)
   const isAiThinking = ref(false)
   const error = ref<string | null>(null)
+  let timerInterval: ReturnType<typeof setInterval> | null = null
 
   // Computed
   const isPlayerTurn = computed(() => currentPlayer.value === playerColor.value)
@@ -36,10 +37,35 @@ export const useGameStore = defineStore('game', () => {
     return null
   })
 
+  // Timer management
+  function startTimer() {
+    if (timerInterval) {
+      clearInterval(timerInterval)
+    }
+    timerInterval = setInterval(() => {
+      if (!isGameOver.value) {
+        if (currentPlayer.value === playerColor.value) {
+          playerTime.value += 1
+        } else {
+          aiTime.value += 1
+        }
+      }
+    }, 1000)
+  }
+
+  function stopTimer() {
+    if (timerInterval) {
+      clearInterval(timerInterval)
+      timerInterval = null
+    }
+  }
+
   // Actions
   async function createGame(selectedDifficulty: Difficulty, selectedColor: Player) {
     try {
       error.value = null
+      stopTimer()
+
       const response = await gameApi.createGame({
         difficulty: selectedDifficulty,
         player_color: selectedColor
@@ -64,6 +90,9 @@ export const useGameStore = defineStore('game', () => {
         lastMove.value = response.ai_move
         moveCount.value = 1
       }
+
+      // Start the timer
+      startTimer()
     } catch (e: any) {
       error.value = e.response?.data?.detail || 'Failed to create game'
       throw e
@@ -82,28 +111,37 @@ export const useGameStore = defineStore('game', () => {
 
     try {
       error.value = null
+
+      // Immediately show player's move
+      board.value[row][col] = playerColor.value
+      lastMove.value = { row, col, player: playerColor.value }
+
+      // Switch to AI's turn immediately so AI timer starts
+      currentPlayer.value = playerColor.value === 1 ? -1 : 1
       isAiThinking.value = true
 
       const response = await gameApi.makeMove(gameId.value, { row, col })
-
-      // Update board with player move
-      board.value[response.player_move.row][response.player_move.col] = response.player_move.player
 
       // Update board with AI move if present
       if (response.ai_move) {
         board.value[response.ai_move.row][response.ai_move.col] = response.ai_move.player
         lastMove.value = response.ai_move
-      } else {
-        lastMove.value = response.player_move
       }
 
       currentPlayer.value = response.current_player
       status.value = response.status
       moveCount.value = response.move_count
-      playerTime.value = response.player_time
-      aiTime.value = response.ai_time
       debugInfo.value = response.debug_info
+
+      // Stop timer if game is over
+      if (status.value !== 'in_progress') {
+        stopTimer()
+      }
     } catch (e: any) {
+      // Revert player's move on error
+      board.value[row][col] = 0
+      lastMove.value = null
+      currentPlayer.value = playerColor.value
       error.value = e.response?.data?.detail || 'Failed to make move'
       throw e
     } finally {
@@ -118,6 +156,7 @@ export const useGameStore = defineStore('game', () => {
       error.value = null
       await gameApi.resignGame(gameId.value)
       status.value = 'ai_won'
+      stopTimer()
     } catch (e: any) {
       error.value = e.response?.data?.detail || 'Failed to resign'
       throw e
@@ -125,6 +164,7 @@ export const useGameStore = defineStore('game', () => {
   }
 
   function resetGame() {
+    stopTimer()
     gameId.value = null
     board.value = []
     currentPlayer.value = 1

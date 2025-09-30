@@ -25,12 +25,15 @@ class TSSResult:
 class TSSSearcher:
     """Threat-Space Search implementation."""
 
-    def __init__(self, board_size: int = 15):
+    def __init__(self, board_size: int = 15, aggressive_offense: bool = False):
         self.board_size = board_size
         self.threat_detector = ThreatDetector(board_size)
+        self.aggressive_offense = aggressive_offense
         self.nodes_visited = 0
         self.start_time = 0
         self.time_cap_ms = 0
+        # Memoization cache for current search only
+        self._threat_cache = {}
 
     def search(self, position: Position, depth: int, time_cap_ms: int) -> TSSResult:
         """Perform TSS search."""
@@ -42,76 +45,98 @@ class TSSSearcher:
         import numpy as np
         if not np.all(np.isin(position.board, [-1, 0, 1])):
             raise ValueError("Invalid board values in TSS position")
+
+        # Clear cache for new search (do this early to prevent OOM)
+        self._threat_cache.clear()
+
         self.nodes_visited = 0
         self.start_time = time.time() * 1000
         self.time_cap_ms = time_cap_ms
 
-        # CRITICAL: Check for immediate WIN first (complete 5-in-a-row)
-        immediate_win = self._check_immediate_win(position, position.current_player)
-        if immediate_win:
-            return TSSResult(
-                forced_move=immediate_win,
-                is_forced_win=True,
-                search_stats={
-                    "nodes_visited": 1,
-                    "time_ms": time.time() * 1000 - self.start_time,
-                    "reason": "immediate_win",
-                },
-            )
-
-        # Check if opponent has immediate win threat (5-in-a-row next move)
-        defense_moves = self.threat_detector.must_defend(
-            position, position.current_player
-        )
-
-        # If both we and opponent have winning moves, check who wins first
-        if defense_moves:
-            # Check if we have a winning move too
-            our_win = self._check_immediate_win(position, position.current_player)
-            if our_win:
-                # We both have immediate wins - we move first, so we win!
+        try:
+            # CRITICAL: Check for immediate WIN first (complete 5-in-a-row)
+            immediate_win = self._check_immediate_win(position, position.current_player)
+            if immediate_win:
                 return TSSResult(
-                    forced_move=our_win,
+                    forced_move=immediate_win,
                     is_forced_win=True,
                     search_stats={
-                        "nodes_visited": 2,
+                        "nodes_visited": 1,
                         "time_ms": time.time() * 1000 - self.start_time,
-                        "reason": "win_over_defense",
+                        "reason": "immediate_win",
                     },
                 )
 
-            # Only opponent has immediate win, must defend
-            return TSSResult(
-                forced_move=defense_moves[0],
-                is_forced_defense=True,
-                search_stats={
-                    "nodes_visited": 2,
-                    "time_ms": time.time() * 1000 - self.start_time,
-                    "reason": "immediate_defense",
-                },
+            # Check if opponent has immediate win threat (5-in-a-row next move)
+            defense_moves = self.threat_detector.must_defend(
+                position, position.current_player
             )
 
-        # Search for forced win sequence (multi-move)
-        best_move = self._search_forced_win(position, depth, position.current_player)
-        if best_move:
+            # If both we and opponent have winning moves, check who wins first
+            if defense_moves:
+                # Check if we have a winning move too
+                our_win = self._check_immediate_win(position, position.current_player)
+                if our_win:
+                    # We both have immediate wins - we move first, so we win!
+                    return TSSResult(
+                        forced_move=our_win,
+                        is_forced_win=True,
+                        search_stats={
+                            "nodes_visited": 2,
+                            "time_ms": time.time() * 1000 - self.start_time,
+                            "reason": "win_over_defense",
+                        },
+                    )
+
+                # Only opponent has immediate win, must defend
+                return TSSResult(
+                    forced_move=defense_moves[0],
+                    is_forced_defense=True,
+                    search_stats={
+                        "nodes_visited": 2,
+                        "time_ms": time.time() * 1000 - self.start_time,
+                        "reason": "immediate_defense",
+                    },
+                )
+
+            # Search for forced win sequence (multi-move)
+            best_move = self._search_forced_win(position, depth, position.current_player)
+            if best_move:
+                return TSSResult(
+                    forced_move=best_move,
+                    is_forced_win=True,
+                    search_stats={
+                        "nodes_visited": self.nodes_visited,
+                        "time_ms": time.time() * 1000 - self.start_time,
+                        "reason": "forced_win",
+                    },
+                )
+
+            # Aggressive offense: extend open three to open four if opponent has no threats
+            if self.aggressive_offense:
+                offensive_move = self._check_offensive_opportunity(position)
+                if offensive_move:
+                    return TSSResult(
+                        forced_move=offensive_move,
+                        is_forced_win=False,
+                        search_stats={
+                            "nodes_visited": self.nodes_visited,
+                            "time_ms": time.time() * 1000 - self.start_time,
+                            "reason": "aggressive_offense_open_three",
+                        },
+                    )
+
+            # No forced sequence found
             return TSSResult(
-                forced_move=best_move,
-                is_forced_win=True,
                 search_stats={
                     "nodes_visited": self.nodes_visited,
                     "time_ms": time.time() * 1000 - self.start_time,
-                    "reason": "forced_win",
-                },
+                    "reason": "no_forced_sequence",
+                }
             )
-
-        # No forced sequence found
-        return TSSResult(
-            search_stats={
-                "nodes_visited": self.nodes_visited,
-                "time_ms": time.time() * 1000 - self.start_time,
-                "reason": "no_forced_sequence",
-            }
-        )
+        finally:
+            # Always clear cache after search to prevent memory buildup
+            self._threat_cache.clear()
 
     def _check_immediate_win(
         self, position: Position, player: int
@@ -128,6 +153,64 @@ class TSSSearcher:
                     # Check if this creates 5 in a row
                     if self.threat_detector._creates_five_in_row(test_board, r, c, player):
                         return (r, c)
+        return None
+
+    def _check_offensive_opportunity(
+        self, position: Position
+    ) -> Optional[Tuple[int, int]]:
+        """
+        Check for offensive opportunity: extend open three to open four.
+        Only returns a move if:
+        1. Bot has an open three that can be extended to open four
+        2. Player has no immediate threats
+        """
+        player = position.current_player
+        opponent = -player
+
+        # First, check if opponent has any threats - if so, don't be aggressive
+        opponent_threats = self._get_cached_threat_moves(position, opponent)
+        if opponent_threats:
+            # Opponent has threats, don't pursue aggressive offense
+            return None
+
+        # Look for open threes that can be extended to open fours
+        threat_moves = self._get_cached_threat_moves(position, player)
+
+        best_move = None
+        best_priority = -1
+
+        for move in threat_moves:
+            row, col = move
+            # Analyze what threats this move creates
+            test_board = position.board.copy()
+            test_board[row, col] = player
+
+            # Check if this move creates an open four
+            threats = self.threat_detector._analyze_cell_threats(
+                position, row, col, player
+            )
+
+            # Calculate priority
+            priority = 0
+            has_open_three = False
+
+            for threat in threats:
+                if threat == ThreatType.OPEN_FOUR:
+                    # This extends to open four - highest priority
+                    priority += 1000
+                elif threat == ThreatType.OPEN_THREE:
+                    has_open_three = True
+                    priority += 100
+
+            # We want moves that create open four from existing open three
+            if priority > best_priority:
+                best_priority = priority
+                best_move = move
+
+        # Only return if we found a move that creates open four
+        if best_priority >= 1000:
+            return best_move
+
         return None
 
     def _search_forced_win(
@@ -194,7 +277,7 @@ class TSSSearcher:
         self, position: Position, player: int
     ) -> List[Tuple[int, int]]:
         """Get moves prioritized by threat value."""
-        threat_moves = list(self.threat_detector.get_threat_moves(position, player))
+        threat_moves = self._get_cached_threat_moves(position, player)
 
         # Sort by threat priority
         def threat_priority(move):
@@ -225,6 +308,20 @@ class TSSSearcher:
         """Check if time limit exceeded."""
         current_time = time.time() * 1000
         return (current_time - self.start_time) > self.time_cap_ms
+
+    def _get_cached_threat_moves(
+        self, position: Position, player: int
+    ) -> List[Tuple[int, int]]:
+        """Get threat moves with memoization for current position."""
+        # Create cache key from board state and player
+        cache_key = (position.board.tobytes(), player)
+
+        if cache_key not in self._threat_cache:
+            self._threat_cache[cache_key] = list(
+                self.threat_detector.get_threat_moves(position, player)
+            )
+
+        return self._threat_cache[cache_key]
 
 
 def tss_search(position: Position, depth: int, time_cap_ms: int) -> TSSResult:

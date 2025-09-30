@@ -8,6 +8,7 @@ from tqdm import tqdm
 from ..env.gomoku_env import GomokuEnv
 from ..mcts.adaptive import AdaptiveSimulator
 from ..search import UnifiedSearch
+from ..tss.tss_config import TSSConfig
 
 
 @dataclass
@@ -33,6 +34,7 @@ class SelfPlayWorker:
         adaptive_sims: bool = True,
         batch_size: int = 64,
         difficulty: str = "medium",
+        epoch: int = 0,
     ):
         self.model = model
         self.board_size = board_size
@@ -41,8 +43,12 @@ class SelfPlayWorker:
         self.difficulty = difficulty
         self.env = GomokuEnv(board_size)
 
+        # Get TSS config for current training epoch
+        tss_config = TSSConfig.for_training_epoch(epoch)
+
         # Use UnifiedSearch instead of plain MCTS for tactical training
-        self.search = UnifiedSearch(model, self.env, difficulty=difficulty)
+        self.search = UnifiedSearch(model, self.env, difficulty=difficulty,
+                                    tss_config=tss_config)
         # Keep reference to MCTS for adaptive simulations
         self.mcts = self.search.mcts
         self.adaptive_simulator = AdaptiveSimulator() if adaptive_sims else None

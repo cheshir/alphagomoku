@@ -20,6 +20,9 @@ class TSSConfig:
     defend_broken_four: bool = True    # Block XXXX. or X.XXX patterns
     defend_open_three: bool = False    # Currently disabled - MCTS learns this
 
+    # Offensive tactics
+    aggressive_offense: bool = False   # Extend open three to open four when safe
+
     # Win search settings
     search_forced_wins: bool = True    # Search for multi-move forced wins
     max_search_depth: int = 6          # Max depth for forced win search
@@ -41,20 +44,22 @@ class TSSConfig:
             TSSConfig with appropriate settings
         """
         if epoch < 50:
-            # Early training: Full TSS assistance
+            # Early training: Full TSS assistance including offensive tactics
             return cls(
                 defend_immediate_five=True,
                 defend_open_four=True,
                 defend_broken_four=True,
                 defend_open_three=False,  # Let model learn this from start
+                aggressive_offense=True,  # Teach offensive patterns early
             )
         elif epoch < 100:
-            # Mid training: Disable broken-four defense
+            # Mid training: Disable broken-four defense and offensive tactics
             return cls(
                 defend_immediate_five=True,
                 defend_open_four=True,
                 defend_broken_four=False,  # Model should learn this now
                 defend_open_three=False,
+                aggressive_offense=False,  # Model should learn offense now
             )
         else:
             # Late training: Only keep game-rule defenses
@@ -63,6 +68,7 @@ class TSSConfig:
                 defend_open_four=False,    # Model should learn this now
                 defend_broken_four=False,
                 defend_open_three=False,
+                aggressive_offense=False,
             )
 
     @classmethod
@@ -85,14 +91,16 @@ class TSSConfig:
                 defend_open_four=False,
                 defend_broken_four=False,
                 defend_open_three=False,
+                aggressive_offense=False,
             )
         elif difficulty == "medium":
-            # Medium: Some TSS assistance
+            # Medium: Full TSS tactics enabled
             return cls(
                 defend_immediate_five=True,
                 defend_open_four=True,
                 defend_broken_four=False,
-                defend_open_three=False,
+                defend_open_three=True,
+                aggressive_offense=False,
             )
         else:  # hard
             # Hard: Full TSS for maximum strength
@@ -100,7 +108,8 @@ class TSSConfig:
                 defend_immediate_five=True,
                 defend_open_four=True,
                 defend_broken_four=True,
-                defend_open_three=False,
+                defend_open_three=True,
+                aggressive_offense=True,
             )
 
 

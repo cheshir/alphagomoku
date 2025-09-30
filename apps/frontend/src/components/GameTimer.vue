@@ -8,7 +8,7 @@
       <div class="timer-value">{{ formatTime(playerColor === 1 ? playerTime : aiTime) }}</div>
     </div>
 
-    <div class="timer-card" :class="{ active: !isPlayerTurn && !isGameOver && !isAiThinking }">
+    <div class="timer-card" :class="{ active: !isPlayerTurn && !isGameOver }">
       <div class="timer-label">
         <div class="player-indicator white"></div>
         <span>{{ playerColor === -1 ? 'You' : 'AI' }}</span>
