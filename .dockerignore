@@ -1,0 +1,42 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+*.egg-info/
+dist/
+build/
+
+# Data and logs
+data/
+runs/
+*.log
+debug.log
+training_report.png
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+.mplconfig/
+
+# Frontend
+frontend/
+apps/frontend/node_modules/
+apps/frontend/dist/
+
+# Git
+.git/
+.gitignore
+
+# Docs
+docs/
+*.md
+project.txt

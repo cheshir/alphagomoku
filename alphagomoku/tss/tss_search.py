@@ -46,22 +46,52 @@ class TSSSearcher:
         self.start_time = time.time() * 1000
         self.time_cap_ms = time_cap_ms
 
-        # Check for immediate forced defense
+        # CRITICAL: Check for immediate WIN first (complete 5-in-a-row)
+        immediate_win = self._check_immediate_win(position, position.current_player)
+        if immediate_win:
+            return TSSResult(
+                forced_move=immediate_win,
+                is_forced_win=True,
+                search_stats={
+                    "nodes_visited": 1,
+                    "time_ms": time.time() * 1000 - self.start_time,
+                    "reason": "immediate_win",
+                },
+            )
+
+        # Check if opponent has immediate win threat (5-in-a-row next move)
         defense_moves = self.threat_detector.must_defend(
             position, position.current_player
         )
+
+        # If both we and opponent have winning moves, check who wins first
         if defense_moves:
+            # Check if we have a winning move too
+            our_win = self._check_immediate_win(position, position.current_player)
+            if our_win:
+                # We both have immediate wins - we move first, so we win!
+                return TSSResult(
+                    forced_move=our_win,
+                    is_forced_win=True,
+                    search_stats={
+                        "nodes_visited": 2,
+                        "time_ms": time.time() * 1000 - self.start_time,
+                        "reason": "win_over_defense",
+                    },
+                )
+
+            # Only opponent has immediate win, must defend
             return TSSResult(
                 forced_move=defense_moves[0],
                 is_forced_defense=True,
                 search_stats={
-                    "nodes_visited": 1,
+                    "nodes_visited": 2,
                     "time_ms": time.time() * 1000 - self.start_time,
                     "reason": "immediate_defense",
                 },
             )
 
-        # Search for forced win
+        # Search for forced win sequence (multi-move)
         best_move = self._search_forced_win(position, depth, position.current_player)
         if best_move:
             return TSSResult(
@@ -82,6 +112,23 @@ class TSSSearcher:
                 "reason": "no_forced_sequence",
             }
         )
+
+    def _check_immediate_win(
+        self, position: Position, player: int
+    ) -> Optional[Tuple[int, int]]:
+        """Check if player has a move that immediately wins (completes 5-in-a-row)."""
+        # Check all empty cells for immediate winning moves
+        for r in range(self.board_size):
+            for c in range(self.board_size):
+                if position.board[r, c] == 0:
+                    # Try placing stone here
+                    test_board = position.board.copy()
+                    test_board[r, c] = player
+
+                    # Check if this creates 5 in a row
+                    if self.threat_detector._creates_five_in_row(test_board, r, c, player):
+                        return (r, c)
+        return None
 
     def _search_forced_win(
         self, position: Position, depth: int, player: int

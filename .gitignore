@@ -70,3 +70,17 @@ models/
 *.pt
 *.onnx
 *.pb
+
+# Frontend
+apps/frontend/node_modules/
+apps/frontend/dist/
+apps/frontend/.env.local
+
+# Logs
+debug.log
+*.log
+
+# Misc
+.mplconfig/
+project.txt
+training_report.png

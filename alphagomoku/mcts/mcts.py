@@ -8,6 +8,7 @@ import torch
 
 from ..env.gomoku_env import GomokuEnv
 from .config import MCTSConfig
+from .opening import boost_opening_moves
 
 
 class MCTSNode:
@@ -272,7 +273,30 @@ class MCTS:
                 # Deterministic selection
                 probs = np.zeros(len(visits), dtype=float)
                 if len(visits) > 0:
-                    probs[np.argmax(visits)] = self.config.win_value
+                    # Opening move logic: prefer adjacent moves when responding to first stone
+                    num_stones = np.sum(self.root.state != 0)
+                    if num_stones == 1:
+                        # Find adjacent actions
+                        stones = np.where(self.root.state != 0)
+                        opp_row, opp_col = stones[0][0], stones[1][0]
+
+                        adjacent_mask = np.zeros(len(actions), dtype=bool)
+                        for i, action in enumerate(actions):
+                            r, c = divmod(action, self.env.board_size)
+                            dist = max(abs(r - opp_row), abs(c - opp_col))
+                            if dist == 1:  # Adjacent (distance 1)
+                                adjacent_mask[i] = True
+
+                        if np.any(adjacent_mask):
+                            # Choose best among adjacent moves only
+                            adjacent_visits = np.where(adjacent_mask, visits, -np.inf)
+                            best_idx = np.argmax(adjacent_visits)
+                        else:
+                            best_idx = np.argmax(visits)
+                    else:
+                        best_idx = np.argmax(visits)
+
+                    probs[best_idx] = self.config.win_value
             else:
                 # Temperature-based sampling with safeguards for zero totals
                 exponent = self.config.win_value / max(temperature, 1e-8)
@@ -454,8 +478,23 @@ class MCTS:
 
             value = float(values_t[i].item())
 
+            # Convert to numpy for opening boost
+            policy_np = policy.detach().cpu().numpy()
+
+            # Boost opening moves if this is the ROOT node with 1 opponent stone
+            is_root = (node == self.root)
+            num_stones = np.sum(node.state != 0)
+            if is_root and num_stones == 1:
+                policy_np = boost_opening_moves(
+                    policy_np,
+                    node.state,
+                    board_size=node.board_size,
+                    boost_factor=1000.0,  # VERY strong boost
+                    distance=2,
+                )
+
             if not node.is_expanded:
-                node.expand(policy.detach().cpu().numpy())
+                node.expand(policy_np)
 
             # Backup along path
             v = value
@@ -503,20 +542,34 @@ class MCTS:
         state_np = self._state_to_numpy_from_node(node)
         state_tensor = torch.from_numpy(state_np).float().to(device)
 
-        policy_t, value = self.model.predict(state_tensor)
+        policy_t, value_t = self.model.predict(state_tensor)
 
         # Create legal mask on device directly
         legal_mask_np = (node.state.reshape(-1) == 0).astype(np.float32)
         legal_mask = torch.from_numpy(legal_mask_np).to(device)
 
-        if not torch.isfinite(policy_t).all() or not torch.isfinite(value).all():
+        if not torch.isfinite(policy_t).all() or not torch.isfinite(value_t).all():
             raise ValueError("Model produced non-finite outputs during evaluation")
 
         policy_t = policy_t * legal_mask
         policy_t = policy_t / (policy_t.sum() + self.config.policy_epsilon)
 
         policy = policy_t.detach().cpu().numpy()
-        return policy, value
+
+        # Boost opening moves if this is a first-move response
+        num_stones = np.sum(node.state != 0)
+        if num_stones == 1:
+            # This is AI's first move response - boost moves near opponent's stone
+            policy = boost_opening_moves(
+                policy,
+                node.state,
+                board_size=node.board_size,
+                boost_factor=50.0,  # Strong boost to ensure nearby placement
+                distance=2,  # Consider positions 2 squares away
+            )
+
+        value_float = float(value_t.item())
+        return policy, value_float
 
     def reuse_subtree(self, action: int):
         """Reuse subtree after making a move"""

@@ -10,9 +10,9 @@ class AdaptiveSimulator:
 
     def __init__(
         self,
-        early_sims: Tuple[int, int] = (48, 130),
-        mid_sims: Tuple[int, int] = (160, 280),
-        late_sims: Tuple[int, int] = (40, 90),
+        early_sims: Tuple[int, int] = (400, 600),
+        mid_sims: Tuple[int, int] = (600, 800),
+        late_sims: Tuple[int, int] = (300, 500),
         early_moves: int = 10,
         late_moves: int = 180,
     ):

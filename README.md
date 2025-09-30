@@ -1,14 +1,26 @@
 # AlphaGomoku: AlphaZero-style Gomoku AI
 
-A strong Gomoku (15×15) AI implementation using AlphaZero methodology with self-play training, Monte Carlo Tree Search (MCTS), and deep neural networks.
+A strong Gomoku (15×15) AI implementation using AlphaZero methodology with self-play training, Monte Carlo Tree Search (MCTS), and deep neural networks. **Now with a beautiful web UI!** 🎮
 
 ## 🎯 Project Overview
 
 - **Goal**: Build a competitive Gomoku AI that can beat experienced human players
 - **Architecture**: DW-ResNet-SE + MCTS + Threat-Space Search + Endgame Solver
 - **Training**: PyTorch with MPS acceleration on Apple Silicon
-- **Inference**: ONNX Runtime for cross-platform deployment
+- **UI**: Modern Vue 3 web application with FastAPI backend
+- **Deployment**: Docker + Docker Compose for easy setup
 - **Board Size**: 15×15 (classic Gomoku rules)
+
+## 🎮 Play Against Your AI
+
+**Quick Start**:
+```bash
+docker-compose up --build
+```
+
+Then open http://localhost:5173 in your browser!
+
+See [docs/QUICKSTART.md](docs/QUICKSTART.md) for detailed instructions.
 
 ## 🚀 Quick Start
 
@@ -155,11 +167,35 @@ print(f'Win rate: {results[\"win_rate\"]:.2%}')
 "
 ```
 
+## 🎨 Web UI Features
+
+The project now includes a complete web interface:
+
+- **Modern Wood-Themed Board**: SVG-rendered 15×15 Gomoku board with authentic feel
+- **Three Difficulty Levels**: Easy (64 sims), Medium (128 sims), Hard (256 sims)
+- **Real-Time Timers**: Track player and AI time usage
+- **AI Thinking Indicator**: Visual feedback during AI computation
+- **Debug Panel**: Comprehensive AI metrics including:
+  - MCTS simulations and search depth
+  - Value estimate and thinking time
+  - Top 5 move candidates with visit counts
+  - Full policy distribution heatmap
+- **Game Controls**: New game, resign, difficulty selection
+- **Last Move Indicator**: Visual marker on most recent move
+- **Hover Preview**: See stone placement before clicking
+
+See [docs/UI_IMPLEMENTATION.md](docs/UI_IMPLEMENTATION.md) for full UI documentation.
+
 ## 📁 Project Structure
 
 ```
 alphagomoku/
-├── alphagomoku/           # Core package
+├── apps/                  # Web application
+│   ├── backend/          # FastAPI server
+│   │   └── app/          # Game logic & inference
+│   └── frontend/         # Vue 3 UI
+│       └── src/          # Components & stores
+├── alphagomoku/          # Core ML package
 │   ├── env/              # Gomoku environment
 │   ├── model/            # Neural network architecture
 │   ├── mcts/             # Monte Carlo Tree Search
@@ -169,13 +205,13 @@ alphagomoku/
 │   └── tss/              # Threat-Space Search
 ├── scripts/              # Training and utility scripts
 ├── tests/                # Unit and integration tests
-│   ├── unit/            # Unit tests
-│   └── integration/     # Integration tests
 ├── docs/                 # Technical specifications
-├── configs/              # Configuration files
-├── data/                 # Training data directory
 ├── checkpoints/          # Model checkpoints
-└── runs/                 # Training run logs
+├── docker-compose.yml    # Docker setup
+└── docs/                 # All documentation
+    ├── QUICKSTART.md     # Get started in 5 minutes
+    ├── API.md            # API documentation
+    └── UI_IMPLEMENTATION.md  # UI technical details
 ```
 
 ## 🔧 Configuration

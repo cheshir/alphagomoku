@@ -24,6 +24,7 @@ from alphagomoku.train.trainer import Trainer
 from alphagomoku.train.data_buffer import DataBuffer
 from alphagomoku.selfplay.selfplay import SelfPlayWorker
 from alphagomoku.selfplay.parallel import ParallelSelfPlay
+from alphagomoku.tss import TSSConfig, set_default_config
 
 
 def _plot_training_progress(history, current_epoch):
@@ -298,7 +299,19 @@ def main():
     )
     for epoch in epoch_pbar:
         epoch_start = time.time()
-        
+
+        # Update TSS config based on current epoch (progressive learning)
+        tss_config = TSSConfig.for_training_epoch(epoch)
+        set_default_config(tss_config)
+
+        # Log TSS config changes at key epochs
+        if epoch % 25 == 0:
+            tqdm.write(f"\n📊 Epoch {epoch} TSS Configuration:")
+            tqdm.write(f"   - defend_immediate_five: {tss_config.defend_immediate_five}")
+            tqdm.write(f"   - defend_open_four: {tss_config.defend_open_four}")
+            tqdm.write(f"   - defend_broken_four: {tss_config.defend_broken_four}")
+            tqdm.write(f"   - defend_open_three: {tss_config.defend_open_three}")
+
         # Generate self-play data
         selfplay_start = time.time()
         selfplay_data = selfplay_worker.generate_batch(args.selfplay_games)
