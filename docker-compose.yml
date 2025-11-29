@@ -6,7 +6,7 @@ services:
       context: .
       dockerfile: apps/backend/Dockerfile
     ports:
-      - "8000:8000"
+      - "8021:8000"
     volumes:
       - ./apps/backend:/app/backend
       - ./alphagomoku:/app/alphagomoku
@@ -27,12 +27,12 @@ services:
       context: apps/frontend
       dockerfile: Dockerfile
     ports:
-      - "5173:5173"
+      - "8020:5173"
     volumes:
       - ./apps/frontend:/app
       - /app/node_modules
     environment:
-      - VITE_API_URL=http://localhost:8000
+      - VITE_API_URL=https://backend.alpahgomoku.orb.local
     command: npm run dev
     depends_on:
       - backend

@@ -26,8 +26,8 @@ class InferenceEngine:
         self.device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
         print(f"Using device: {self.device}")
 
-        # Load model
-        self.model = GomokuNet(board_size=settings.BOARD_SIZE)
+        # Load model - UPGRADED to 5M parameters (30 blocks, 192 channels)
+        self.model = GomokuNet(board_size=settings.BOARD_SIZE, num_blocks=30, channels=192)
         # Set weights_only=False since this is a trusted checkpoint from training
         checkpoint = torch.load(model_path, map_location=self.device, weights_only=False)
 

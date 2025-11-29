@@ -53,10 +53,19 @@ def _worker_initializer(
         )
     model.eval()
 
-    # Force CPU-only inference in worker processes to avoid MPS/CUDA context issues
-    model = model.cpu()
-    for param in model.parameters():
-        param.data = param.data.cpu()
+    # Try to use MPS for hardware acceleration, fall back to CPU if unavailable
+    device_used = 'cpu'
+    try:
+        if torch.backends.mps.is_available():
+            model = model.to('mps')
+            device_used = 'mps'
+            print(f"[Worker subprocess] Using MPS device for acceleration")
+        else:
+            model = model.cpu()
+            print(f"[Worker subprocess] MPS not available, using CPU")
+    except Exception as e:
+        print(f"[Worker subprocess] MPS failed ({e}), falling back to CPU")
+        model = model.cpu()
 
     _GLOBAL_WORKER = SelfPlayWorker(
         model=model,
@@ -66,6 +75,10 @@ def _worker_initializer(
         batch_size=batch_size,
         difficulty=difficulty,
     )
+
+    # Log device confirmation
+    actual_device = next(model.parameters()).device
+    print(f"[Worker subprocess] Model loaded on device: {actual_device}")
 
 
 def _play_single_game(task_data) -> List[SelfPlayData]:
@@ -175,10 +188,11 @@ class ParallelSelfPlay:
 
         positions_generated = 0
         all_data: List[SelfPlayData] = []
-        
-        with mp.Pool(
+
+        pool = mp.Pool(
             processes=num_workers, initializer=_worker_initializer, initargs=init_args
-        ) as pool:
+        )
+        try:
             with tqdm(
                 total=num_games,
                 desc="Self-play",
@@ -195,6 +209,17 @@ class ParallelSelfPlay:
                     positions_generated += len(game_data)
                     game_pbar.update(1)
                     game_pbar.set_postfix({'positions': positions_generated})
+        finally:
+            # CRITICAL: Force immediate cleanup of worker processes
+            # This ensures MPS memory is released before training starts
+            pool.close()
+            pool.join()  # Wait for all workers to exit
+            pool.terminate()  # Force kill any lingering processes
+            pool.join()  # Wait for termination to complete
+
+            # Give OS time to reclaim memory from terminated processes
+            import time
+            time.sleep(0.5)
 
         return all_data
 

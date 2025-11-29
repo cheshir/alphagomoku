@@ -9,6 +9,7 @@ from ..env.gomoku_env import GomokuEnv
 from ..mcts.adaptive import AdaptiveSimulator
 from ..search import UnifiedSearch
 from ..tss.tss_config import TSSConfig
+from .temperature import TemperatureScheduler
 
 
 @dataclass
@@ -41,6 +42,7 @@ class SelfPlayWorker:
         self.mcts_simulations = mcts_simulations
         self.adaptive_sims = adaptive_sims
         self.difficulty = difficulty
+        self.epoch = epoch
         self.env = GomokuEnv(board_size)
 
         # Get TSS config for current training epoch
@@ -55,6 +57,9 @@ class SelfPlayWorker:
         # Ensure the initial simulation budget matches requested value
         # (UnifiedSearch picks defaults by difficulty; override here)
         self.mcts.num_simulations = self.mcts_simulations
+
+        # Phase 3: Initialize temperature scheduler
+        self.temperature_scheduler = TemperatureScheduler(epoch=epoch)
 
     def generate_game(self, temperature_moves: int = 8, max_moves: int | None = None) -> List[SelfPlayData]:
         """Generate one self-play game and return training examples"""
@@ -80,15 +85,26 @@ class SelfPlayWorker:
                 )
                 self.mcts.num_simulations = sims
 
-            # Run unified search (MCTS + TSS + Endgame) to get policy
-            temperature = 1.0 if move_count < temperature_moves else 0.0
+            # Phase 3: Run unified search first to get policy
             reuse_tree = move_count > 0  # Reuse tree after first move
-
-            # Use unified search for enhanced tactical play
-            search_result = self.search.search(self.env.board, temperature, reuse_tree)
+            search_result = self.search.search(self.env.board, temperature=1.0, reuse_tree=reuse_tree)
             policy = search_result.action_probs
+
+            # Check if this is a critical/forced position (after getting search result)
+            is_critical = search_result.is_forced if hasattr(search_result, 'is_forced') else False
+
+            # Get temperature from scheduler
+            temperature = self.temperature_scheduler.get_temperature(
+                move_count,
+                is_critical=is_critical
+            )
+
+            # Apply temperature to policy
+            policy = self.temperature_scheduler.apply_temperature(policy, temperature)
+
             if self.adaptive_sims and self.adaptive_simulator:
                 last_confidence = self.adaptive_simulator.get_confidence(policy)
+
             # Store training example (value will be filled after game ends)
             game_data.append(
                 SelfPlayData(
@@ -99,12 +115,12 @@ class SelfPlayWorker:
                     last_move=tuple(int(x) for x in self.env.last_move.tolist())
                     if self.env.last_move.size == 2
                     else None,
-                    metadata={"move_index": move_count},
+                    metadata={"move_index": move_count, "temperature": temperature},
                 )
             )
 
             # Select and make move
-            if temperature > 0:
+            if self.temperature_scheduler.should_sample(temperature):
                 action = np.random.choice(len(policy), p=policy)
             else:
                 action = np.argmax(policy)
@@ -141,8 +157,9 @@ class SelfPlayWorker:
         # Channel 3: Side to move
         side_to_move = np.ones((board_size, board_size), dtype=np.float32)
 
-        # Channel 4: Pattern maps (placeholder)
-        pattern_maps = np.zeros((board_size, board_size), dtype=np.float32)
+        # Channel 4: Pattern maps (NOW COMPUTED!)
+        from ..utils.pattern_detector import get_pattern_features
+        pattern_maps = get_pattern_features(self.env.board, self.env.current_player)
 
         return torch.FloatTensor(
             np.stack([own_stones, opp_stones, last_move, side_to_move, pattern_maps])

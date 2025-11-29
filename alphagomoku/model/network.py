@@ -78,10 +78,11 @@ class ResidualBlock(nn.Module):
 class GomokuNet(nn.Module):
     """DW-ResNet-SE network for Gomoku with policy and value heads"""
 
-    def __init__(self, board_size: int = 15, num_blocks: int = 12, channels: int = 64):
+    def __init__(self, board_size: int = 15, num_blocks: int = 12, channels: int = 64, use_checkpoint: bool = False):
         super().__init__()
         self.board_size = board_size
         self.channels = channels
+        self.use_checkpoint = use_checkpoint
 
         # Input processing - 5 channels: own stones, opponent stones, last move, side-to-move, pattern maps
         self.input_conv = nn.Sequential(
@@ -121,8 +122,15 @@ class GomokuNet(nn.Module):
     def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         # Backbone
         x = self.input_conv(x)
-        for block in self.blocks:
-            x = block(x)
+
+        # Use gradient checkpointing if enabled (saves memory during training)
+        if self.use_checkpoint and self.training:
+            from torch.utils.checkpoint import checkpoint
+            for block in self.blocks:
+                x = checkpoint(block, x, use_reentrant=False)
+        else:
+            for block in self.blocks:
+                x = block(x)
 
         # Policy head
         policy = self.policy_conv(x)

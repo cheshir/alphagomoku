@@ -25,6 +25,8 @@ from alphagomoku.train.data_buffer import DataBuffer
 from alphagomoku.selfplay.selfplay import SelfPlayWorker
 from alphagomoku.selfplay.parallel import ParallelSelfPlay
 from alphagomoku.tss import TSSConfig, set_default_config
+from alphagomoku.train.tactical_augmentation import augment_with_tactical_data
+from alphagomoku.train.data_filter import apply_all_filters
 
 
 def _plot_training_progress(history, current_epoch):
@@ -119,10 +121,10 @@ Learning Rate: {args.lr}"""
     warmup_display = args.warmup_epochs if effective_lr_schedule == 'cosine' else 0
 
     config_text = f"""Configuration:
-    
+
 • Board Size: 15x15
-• Model Blocks: 12
-• Model Channels: 64
+• Model Blocks: 30 (5M params)
+• Model Channels: 192
 • MCTS Simulations: {args.mcts_simulations}
 • Adaptive Sims: {args.adaptive_sims}
 • MCTS Batch Size: {args.batch_size_mcts}
@@ -187,6 +189,23 @@ def _append_metrics_csv(csv_path: str, epoch: int, history: dict, extra: dict):
         writer.writerow(row)
 
 
+def _log_memory_stats(label: str):
+    """Log detailed memory statistics for debugging"""
+    if torch.backends.mps.is_available():
+        allocated = torch.mps.current_allocated_memory() / 1024**3
+        driver = torch.mps.driver_allocated_memory() / 1024**3
+        tqdm.write(f"   [{label}] MPS allocated: {allocated:.2f} GB, driver: {driver:.2f} GB")
+
+    # Also log system memory if psutil available
+    try:
+        import psutil
+        process = psutil.Process()
+        rss_gb = process.memory_info().rss / 1024**3
+        tqdm.write(f"   [{label}] Process RSS: {rss_gb:.2f} GB")
+    except ImportError:
+        pass
+
+
 def main():
     parser = argparse.ArgumentParser(description='Train AlphaGomoku model')
     parser.add_argument('--data-dir', type=str, default='./data', help='Data directory')
@@ -210,6 +229,7 @@ def main():
     parser.add_argument('--batch-size-mcts', type=int, default=64, help='MCTS batch size for neural network evaluation')
     parser.add_argument('--difficulty', type=str, choices=['easy', 'medium', 'strong'], default='medium',
                         help='Training difficulty (affects TSS/endgame solver usage)')
+    parser.add_argument('--debug-memory', action='store_true', help='Enable detailed memory logging')
 
     args = parser.parse_args()
     
@@ -217,9 +237,12 @@ def main():
     os.makedirs(args.data_dir, exist_ok=True)
     os.makedirs(args.checkpoint_dir, exist_ok=True)
     
-    # Initialize model
-    model = GomokuNet(board_size=15, num_blocks=12, channels=64)
+    # Initialize model - UPGRADED to 5M parameters for better performance
+    # Balance between capacity and training speed on M1 Pro
+    model = GomokuNet(board_size=15, num_blocks=30, channels=192)
     print(f"Model parameters: {model.get_model_size():,}")
+    print("🚀 Using powerful 5M parameter model (30 blocks, 192 channels)")
+    print("   ~2x larger than original 2.6M model for better policy/value estimates")
     
     # Determine effective LR schedule
     effective_lr_schedule = args.lr_schedule
@@ -300,6 +323,11 @@ def main():
     for epoch in epoch_pbar:
         epoch_start = time.time()
 
+        # Memory logging at epoch start
+        if args.debug_memory:
+            tqdm.write(f"\n🔍 Epoch {epoch} Memory Tracking:")
+            _log_memory_stats("Epoch start")
+
         # Update TSS config based on current epoch (progressive learning)
         tss_config = TSSConfig.for_training_epoch(epoch)
         set_default_config(tss_config)
@@ -314,8 +342,47 @@ def main():
 
         # Generate self-play data
         selfplay_start = time.time()
+        if args.debug_memory:
+            _log_memory_stats("Before selfplay")
+
         selfplay_data = selfplay_worker.generate_batch(args.selfplay_games)
-        
+
+        if args.debug_memory:
+            _log_memory_stats("After selfplay")
+
+        # CRITICAL: Aggressive cleanup to prevent MPS memory fragmentation
+        # MPS doesn't release memory automatically when workers finish
+        if torch.backends.mps.is_available():
+            # Log memory before cleanup (always show this, not just debug mode)
+            allocated_gb = torch.mps.current_allocated_memory() / 1024**3
+            driver_gb = torch.mps.driver_allocated_memory() / 1024**3
+            tqdm.write(f"   💾 MPS before cleanup: allocated={allocated_gb:.2f} GB, driver={driver_gb:.2f} GB")
+
+            # Force garbage collection
+            import gc
+            gc.collect()
+
+            # Clear MPS cache multiple times (sometimes needed)
+            torch.mps.empty_cache()
+            torch.mps.synchronize()
+            time.sleep(0.5)  # Give OS time to reclaim
+            torch.mps.empty_cache()
+
+            # Log memory after cleanup (always show this)
+            allocated_gb = torch.mps.current_allocated_memory() / 1024**3
+            driver_gb = torch.mps.driver_allocated_memory() / 1024**3
+            tqdm.write(f"   ✨ MPS after cleanup: allocated={allocated_gb:.2f} GB, driver={driver_gb:.2f} GB")
+            tqdm.write(f"   📉 Freed: {allocated_gb:.2f} GB")
+
+        # Phase 4: AUGMENT with tactical training examples (30% of data for stronger tactics)
+        # Higher ratio early in training, gradually reduce
+        augmentation_ratio = 0.3 if epoch < 100 else 0.2
+        selfplay_data = augment_with_tactical_data(selfplay_data, board_size=15, augmentation_ratio=augmentation_ratio)
+
+        # Phase 5: FILTER stupid moves from training data
+        # This is CRITICAL - prevents model from learning bad habits
+        selfplay_data = apply_all_filters(selfplay_data, board_size=15)
+
         try:
             data_buffer.add_data(selfplay_data)
             selfplay_time = time.time() - selfplay_start
@@ -332,9 +399,15 @@ def main():
         
         # Train
         train_start = time.time()
+        if args.debug_memory:
+            _log_memory_stats("Before training")
+
         metrics = trainer.train_epoch(data_buffer, args.batch_size)
         train_time = time.time() - train_start
-        
+
+        if args.debug_memory:
+            _log_memory_stats("After training")
+
         if metrics:
             epoch_pbar.set_postfix({
                 'loss': f"{metrics['total_loss']:.4f}",

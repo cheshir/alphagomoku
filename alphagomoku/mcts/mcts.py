@@ -469,17 +469,26 @@ class MCTS:
         if not torch.isfinite(policies_t).all() or not torch.isfinite(values_t).all():
             raise ValueError("Model produced non-finite outputs during batched evaluation")
 
+        # CRITICAL: Move tensors to CPU immediately to prevent MPS memory leak
+        # During MCTS, hundreds of batches are processed and tensors accumulate on MPS
+        policies_cpu = policies_t.cpu()
+        values_cpu = values_t.cpu()
+        legal_masks_cpu = legal_masks.cpu()
+
+        # Explicitly delete GPU tensors
+        del batch_states, legal_masks, policies_t, values_t
+
         # Apply legal masks and normalize per leaf, then expand and backup
         for i, (node, path) in enumerate(leaves):
-            policy = policies_t[i]
-            legal_mask = legal_masks[i]
+            policy = policies_cpu[i]
+            legal_mask = legal_masks_cpu[i]
             policy = policy * legal_mask
             policy = policy / (policy.sum() + self.config.policy_epsilon)
 
-            value = float(values_t[i].item())
+            value = float(values_cpu[i].item())
 
             # Convert to numpy for opening boost
-            policy_np = policy.detach().cpu().numpy()
+            policy_np = policy.detach().numpy()
 
             # Boost opening moves if this is the ROOT node with 1 opponent stone
             is_root = (node == self.root)
@@ -584,6 +593,8 @@ class MCTS:
 
     def _state_to_numpy_from_node(self, node: MCTSNode) -> np.ndarray:
         """Convert node state to numpy array for faster batch processing."""
+        from ..utils.pattern_detector import get_pattern_features
+
         board_size = node.board_size
 
         own_stones = (node.state == node.current_player).astype(np.float32)
@@ -595,7 +606,8 @@ class MCTS:
             last_move[lr, lc] = 1.0
 
         side_to_move = np.ones((board_size, board_size), dtype=np.float32)
-        pattern_maps = np.zeros((board_size, board_size), dtype=np.float32)
+        # FIXED: Compute actual pattern features
+        pattern_maps = get_pattern_features(node.state, node.current_player)
 
         return np.stack(
             [own_stones, opp_stones, last_move, side_to_move, pattern_maps]

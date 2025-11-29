@@ -98,7 +98,9 @@ class Trainer:
                     if 0 <= lr < h and 0 <= lc < w:
                         last[lr, lc] = 1.0
                 side = np.ones_like(s, dtype=np.float32)
-                pattern = np.zeros_like(s, dtype=np.float32)
+                # FIXED: Compute actual pattern features instead of zeros
+                from ..utils.pattern_detector import get_pattern_features
+                pattern = get_pattern_features(s, current_player)
                 states_list.append(np.stack([own, opp, last, side, pattern]))
             elif s.ndim == 3 and s.shape[0] == 5:
                 if not np.all(np.isfinite(s)):
