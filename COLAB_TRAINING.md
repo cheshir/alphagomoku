@@ -8,15 +8,22 @@
    - Go to https://colab.research.google.com
    - File → Upload notebook → Select notebook
 
-2. **Enable GPU**
+2. **Enable GPU** ⚠️ IMPORTANT
    - Runtime → Change runtime type → Hardware accelerator → GPU
    - Select T4, V100, or A100 (A100 recommended with Colab Pro)
+   - Click **Save** to apply changes
 
-3. **Run all cells**
+3. **Verify GPU is working** (highly recommended)
+   ```bash
+   python scripts/check_device.py
+   ```
+   You should see: `✅ CUDA is available!`
+
+4. **Run all cells**
    - Runtime → Run all
    - Follow prompts to mount Google Drive
 
-4. **Monitor training**
+5. **Monitor training**
    - Checkpoints saved to Google Drive every epoch
    - Evaluation runs automatically every 5-10 epochs
    - View Elo ratings in `checkpoints/elo_history.json`
@@ -204,31 +211,63 @@ All files saved to Google Drive:
 
 ## Troubleshooting
 
+### "MPS not available, using CPU" on Google Colab
+
+**Problem:** Training says it's using CPU instead of GPU
+
+**Solution:**
+1. **Check GPU is enabled:**
+   - Runtime → Change runtime type → Hardware accelerator → GPU
+   - Click **Save** (very important!)
+   - Restart runtime
+
+2. **Verify CUDA is available:**
+   ```bash
+   python scripts/check_device.py
+   ```
+   You should see `✅ CUDA is available!`
+
+3. **If CUDA still not detected:**
+   ```bash
+   # Reinstall PyTorch with CUDA support
+   pip install torch torchvision --index-url https://download.pytorch.org/whl/cu118
+   ```
+
+4. **Verify installation:**
+   ```python
+   import torch
+   print(torch.cuda.is_available())  # Should print True
+   print(torch.cuda.get_device_name(0))  # Should print GPU name
+   ```
+
 ### Out of Memory (even with auto-config)
 
 Reduce batch size manually:
 ```python
-!python scripts/train.py --batch-size 512 ...
+!python scripts/train.py --batch-size 256 ...  # or even 128
 ```
 
 ### Slow training on T4
 
 Expected! T4 is 2-3× slower than A100. Consider:
+- Use small model: `--model-preset small`
 - Reduce epochs: `--epochs 100`
 - Reduce games: `--selfplay-games 100`
-- Upgrade to Colab Pro
+- Upgrade to Colab Pro for A100 access
 
 ### Colab disconnects frequently
 
-- Use Colab Pro for longer sessions
+- Use Colab Pro for longer sessions (24+ hours)
 - Keep browser tab open
 - Use https://colab.research.google.com/drive (Drive integration)
+- Training auto-resumes from checkpoints with `--resume auto`
 
 ### Can't mount Google Drive
 
 - Check permissions
 - Try different browser
 - Clear cookies and retry
+- Ensure Google Drive has enough space (need ~1-5GB)
 
 ## Advanced: Multi-GPU Training
 

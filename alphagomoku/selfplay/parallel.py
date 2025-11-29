@@ -53,18 +53,22 @@ def _worker_initializer(
         )
     model.eval()
 
-    # Try to use MPS for hardware acceleration, fall back to CPU if unavailable
+    # Try to use GPU (CUDA or MPS) for hardware acceleration, fall back to CPU if unavailable
     device_used = 'cpu'
     try:
-        if torch.backends.mps.is_available():
+        if torch.cuda.is_available():
+            model = model.to('cuda')
+            device_used = 'cuda'
+            print(f"[Worker subprocess] Using CUDA device: {torch.cuda.get_device_name(0)}")
+        elif torch.backends.mps.is_available():
             model = model.to('mps')
             device_used = 'mps'
             print(f"[Worker subprocess] Using MPS device for acceleration")
         else:
             model = model.cpu()
-            print(f"[Worker subprocess] MPS not available, using CPU")
+            print(f"[Worker subprocess] No GPU available, using CPU")
     except Exception as e:
-        print(f"[Worker subprocess] MPS failed ({e}), falling back to CPU")
+        print(f"[Worker subprocess] GPU initialization failed ({e}), falling back to CPU")
         model = model.cpu()
 
     _GLOBAL_WORKER = SelfPlayWorker(
