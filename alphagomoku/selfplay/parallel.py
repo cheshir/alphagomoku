@@ -193,7 +193,10 @@ class ParallelSelfPlay:
         positions_generated = 0
         all_data: List[SelfPlayData] = []
 
-        pool = mp.Pool(
+        # Use spawn context for CUDA compatibility
+        # CUDA cannot be initialized in forked processes
+        ctx = mp.get_context('spawn')
+        pool = ctx.Pool(
             processes=num_workers, initializer=_worker_initializer, initargs=init_args
         )
         try:
