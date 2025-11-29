@@ -1,4 +1,4 @@
-from typing import Tuple
+from typing import Optional, Tuple
 
 import torch
 import torch.nn as nn
@@ -171,3 +171,39 @@ class GomokuNet(nn.Module):
     def get_model_size(self) -> int:
         """Get number of parameters"""
         return sum(p.numel() for p in self.parameters() if p.requires_grad)
+
+    @classmethod
+    def from_preset(
+        cls,
+        preset: str = "small",
+        board_size: int = 15,
+        device: Optional[str] = None
+    ) -> "GomokuNet":
+        """Create model from configuration preset.
+
+        Args:
+            preset: Model size preset ("small", "medium", "large")
+            board_size: Board size (default: 15)
+            device: Device to place model on (optional)
+
+        Returns:
+            Initialized model
+
+        Example:
+            >>> model = GomokuNet.from_preset("small")
+            >>> print(f"Model size: {model.get_model_size():,} params")
+        """
+        from ..config import get_model_config
+
+        config = get_model_config(preset)
+        model = cls(
+            board_size=board_size,
+            num_blocks=config.num_blocks,
+            channels=config.channels,
+            use_checkpoint=config.use_checkpoint,
+        )
+
+        if device:
+            model = model.to(device)
+
+        return model

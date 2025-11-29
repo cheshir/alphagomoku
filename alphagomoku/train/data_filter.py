@@ -1,8 +1,16 @@
-"""Filter training data to exclude stupid/nonsensical moves.
+"""Minimal data filtering for training - trust the learning process.
 
-This is CRITICAL for preventing the model from learning bad habits.
-Even with good self-play, MCTS explores random moves that should not
-be in the training data.
+PHILOSOPHY: The network + MCTS should learn what moves are good/bad.
+We only filter truly pathological cases that waste compute.
+
+REMOVED from previous version:
+- Aggressive edge move filtering
+- Tactical pattern checking (let network learn tactics!)
+- Distance-based filtering (network should learn proximity matters)
+
+KEPT (essential only):
+- Very low confidence moves (MCTS is completely uncertain)
+- Moves far outside the play area (obvious waste)
 """
 
 import numpy as np
@@ -10,68 +18,48 @@ from typing import List
 from ..selfplay.selfplay import SelfPlayData
 
 
-def filter_stupid_moves(data: List[SelfPlayData], board_size: int = 15) -> List[SelfPlayData]:
-    """Filter out training examples with stupid moves.
+def filter_minimal(data: List[SelfPlayData], board_size: int = 15) -> List[SelfPlayData]:
+    """Minimal filtering - only remove pathological cases.
 
-    Removes examples where:
-    1. Move is on board edge in early game (moves 0-10)
-    2. Move is >3 cells from nearest stone (after move 5)
-    3. Move ignores obvious tactical threats
+    Removes only:
+    1. Moves very far (>4 cells) from any stone after move 5
+    2. Very low confidence moves (MCTS nearly uniform)
 
     Args:
         data: List of self-play data
         board_size: Board size
 
     Returns:
-        Filtered list (stupid moves removed)
+        Filtered list
     """
     filtered = []
-    removed_edge = 0
     removed_far = 0
-    removed_tactical = 0
+    removed_low_conf = 0
 
     for example in data:
         # Extract move from policy (argmax = move played)
         move_action = np.argmax(example.policy)
         move_r, move_c = divmod(move_action, board_size)
 
-        # Get board state (channel 0 = own stones, channel 1 = opponent stones)
+        # Get board state
         board = example.state[0] - example.state[1]  # Reconstruct board
         num_stones = np.sum(board != 0)
 
-        # Get pattern channel (used for tactical checks)
-        pattern_channel = example.state[4]  # Channel 4 = patterns
-        move_pattern_value = pattern_channel[move_r, move_c]
-        max_pattern_value = pattern_channel.max()
-
-        # CRITICAL: Never filter forced/winning moves!
-        # If this move has very high pattern value (>0.9), it's likely a forced win/defense
-        is_forced_move = move_pattern_value > 0.9
-
-        # Rule 1: No edge moves in early game (UNLESS it's a forced move)
-        if not is_forced_move and num_stones < 10:
-            is_edge = (move_r == 0 or move_r == board_size-1 or
-                      move_c == 0 or move_c == board_size-1)
-            if is_edge:
-                removed_edge += 1
-                continue
-
-        # Rule 2: No moves far from existing stones (UNLESS it's a forced move)
-        if not is_forced_move and num_stones >= 5:
+        # Rule 1: Only filter moves VERY far from play (>4 cells away)
+        # This catches obvious mistakes but doesn't constrain learning
+        if num_stones >= 5:
             min_dist = _compute_min_distance(board, move_r, move_c)
-            if min_dist > 3:
+            if min_dist > 4:  # Very loose threshold
                 removed_far += 1
                 continue
 
-        # Rule 3: Check for tactical blunders (UNLESS it's a forced move)
-        # If pattern channel shows high values elsewhere, this move is bad
-        if not is_forced_move:
-            if max_pattern_value > 0.8 and move_pattern_value < 0.3:
-                # This is likely a tactical blunder
-                removed_tactical += 1
-                continue
+        # Rule 2: Filter very low confidence (MCTS nearly uniform)
+        max_prob = example.policy.max()
+        if max_prob < 0.1:  # MCTS has almost no preference
+            removed_low_conf += 1
+            continue
 
-        # This example is OK
+        # Keep this example
         filtered.append(example)
 
     # Log filtering stats
@@ -80,13 +68,11 @@ def filter_stupid_moves(data: List[SelfPlayData], board_size: int = 15) -> List[
     removed = total - kept
 
     if removed > 0:
-        print(f"📊 Data filtering: Kept {kept}/{total} ({kept/total*100:.1f}%)")
-        if removed_edge > 0:
-            print(f"   ❌ Removed {removed_edge} edge moves in early game")
+        print(f"🔍 Minimal filtering: Kept {kept}/{total} ({kept/total*100:.1f}%)")
         if removed_far > 0:
-            print(f"   ❌ Removed {removed_far} distant moves (>3 cells away)")
-        if removed_tactical > 0:
-            print(f"   ❌ Removed {removed_tactical} tactical blunders")
+            print(f"   ❌ Removed {removed_far} moves very far from play (>4 cells)")
+        if removed_low_conf > 0:
+            print(f"   ❌ Removed {removed_low_conf} very low confidence moves (<10%)")
 
     return filtered
 
@@ -105,59 +91,24 @@ def _compute_min_distance(board: np.ndarray, r: int, c: int) -> int:
     return min_dist
 
 
-def filter_low_confidence_moves(data: List[SelfPlayData], threshold: float = 0.1) -> List[SelfPlayData]:
-    """Filter moves where the policy is too flat (low confidence).
-
-    If MCTS is very uncertain (policy is nearly uniform), the training
-    signal is weak. Better to exclude these examples.
-
-    Args:
-        data: List of self-play data
-        threshold: Minimum max policy value to keep
-
-    Returns:
-        Filtered list
-    """
-    filtered = []
-    removed = 0
-
-    for example in data:
-        max_prob = example.policy.max()
-
-        # If policy is too flat (nearly uniform), skip it
-        if max_prob < threshold:
-            removed += 1
-            continue
-
-        filtered.append(example)
-
-    if removed > 0:
-        kept = len(filtered)
-        total = len(data) + removed
-        print(f"📊 Low-confidence filtering: Kept {kept}/{total} ({kept/total*100:.1f}%)")
-        print(f"   ❌ Removed {removed} low-confidence examples (max_prob < {threshold})")
-
-    return filtered
-
-
 def apply_all_filters(data: List[SelfPlayData], board_size: int = 15) -> List[SelfPlayData]:
-    """Apply all data quality filters.
+    """Apply minimal data filtering.
+
+    PHILOSOPHY: Trust the learning process. Only filter obvious pathologies.
 
     Args:
         data: Raw self-play data
         board_size: Board size
 
     Returns:
-        High-quality filtered data
+        Filtered data (most examples kept)
     """
-    print(f"\n🔍 Filtering training data (starting with {len(data)} examples)...")
+    if not data:
+        return data
 
-    # Filter 1: Remove stupid moves
-    data = filter_stupid_moves(data, board_size)
+    return filter_minimal(data, board_size)
 
-    # Filter 2: Remove low-confidence moves
-    data = filter_low_confidence_moves(data, threshold=0.15)
 
-    print(f"✅ Final dataset: {len(data)} high-quality examples\n")
-
-    return data
+# Backward compatibility aliases
+filter_stupid_moves = filter_minimal
+filter_low_confidence_moves = lambda data, threshold=0.1: filter_minimal(data)
