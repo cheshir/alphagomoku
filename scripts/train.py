@@ -506,16 +506,20 @@ def main():
             _log_memory_stats("Epoch start", device)
 
         # Update TSS config based on current epoch (progressive learning)
-        tss_config = TSSConfig.for_training_epoch(epoch)
-        set_default_config(tss_config)
+        # Only configure TSS if using medium/strong difficulty (TSS-enhanced training)
+        if args.difficulty in ('medium', 'strong'):
+            tss_config = TSSConfig.for_training_epoch(epoch)
+            set_default_config(tss_config)
 
-        # Log TSS config changes at key epochs
-        if epoch % 25 == 0:
-            tqdm.write(f"\n📊 Epoch {epoch} TSS Configuration:")
-            tqdm.write(f"   - defend_immediate_five: {tss_config.defend_immediate_five}")
-            tqdm.write(f"   - defend_open_four: {tss_config.defend_open_four}")
-            tqdm.write(f"   - defend_broken_four: {tss_config.defend_broken_four}")
-            tqdm.write(f"   - defend_open_three: {tss_config.defend_open_three}")
+            # Log TSS config changes at key epochs
+            if epoch % 25 == 0:
+                tqdm.write(f"\n📊 Epoch {epoch} TSS Configuration:")
+                tqdm.write(f"   - defend_immediate_five: {tss_config.defend_immediate_five}")
+                tqdm.write(f"   - defend_open_four: {tss_config.defend_open_four}")
+                tqdm.write(f"   - defend_broken_four: {tss_config.defend_broken_four}")
+                tqdm.write(f"   - defend_open_three: {tss_config.defend_open_three}")
+        elif epoch % 25 == 0:
+            tqdm.write(f"\n📊 Epoch {epoch}: Training with pure MCTS (AlphaZero style, no TSS)")
 
         # Generate self-play data
         selfplay_start = time.time()
