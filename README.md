@@ -247,8 +247,10 @@ pytest tests/unit/test_model.py -v
 - [REFACTORING_SUMMARY.md](REFACTORING_SUMMARY.md) - Technical details
 
 ### Training & Evaluation
+- [docs/TRAINING_PHILOSOPHY.md](docs/TRAINING_PHILOSOPHY.md) - **⭐ Training strategy (pure MCTS vs TSS)**
 - [COLAB_TRAINING.md](COLAB_TRAINING.md) - Train on Google Colab
 - [HARDWARE_AUTO_CONFIG.md](HARDWARE_AUTO_CONFIG.md) - Hardware optimization
+- [docs/CLOUD_VM_RECOMMENDATIONS.md](docs/CLOUD_VM_RECOMMENDATIONS.md) - Cloud GPU recommendations
 - `make help` - See all training commands
 
 ### Architecture & Design

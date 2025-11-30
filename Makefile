@@ -5,9 +5,9 @@ venv:
 	conda activate alphagomoku
 
 # =============================================================================
-# RECOMMENDED: Fast Iteration (Small Model)
-# Best for development and quick experiments
-# Expected: 10-15 min/epoch, 80+ epochs/day
+# Fast Iteration (Small Model) - For Experiments
+# Quick experiments and validation - pure MCTS (AlphaZero style)
+# Expected: 5-10 min/epoch on MPS, 3-5 min/epoch on CUDA
 # =============================================================================
 
 train-fast:
@@ -25,18 +25,19 @@ train-fast:
 		--lr-schedule cosine \
 		--map-size-gb 16 \
 		--buffer-max-size 2000000 \
-		--batch-size-mcts 32 \
+		--batch-size-mcts 64 \
 		--parallel-workers 4 \
-		--difficulty medium \
+		--difficulty easy \
 		--device auto \
 		--resume auto \
 		--eval-frequency 5 \
 		--eval-games 50
 
 # =============================================================================
-# RECOMMENDED: Balanced Training (Small Model)
+# RECOMMENDED: Balanced Training (Small Model) - AlphaZero Style
 # Best balance of speed and strength
-# Expected: 15-25 min/epoch, 50+ epochs/day
+# Pure MCTS (no TSS) - network learns threats through self-play
+# Expected: 10-20 min/epoch on MPS, 5-10 min/epoch on CUDA
 # =============================================================================
 
 train:
@@ -56,16 +57,17 @@ train:
 		--buffer-max-size 5000000 \
 		--batch-size-mcts 64 \
 		--parallel-workers 4 \
-		--difficulty medium \
+		--difficulty easy \
 		--device auto \
 		--resume auto \
 		--eval-frequency 5 \
 		--eval-games 50
 
 # =============================================================================
-# Production Training (Medium Model)
-# For final strong model - slower but stronger
-# Expected: 40-60 min/epoch, 24-36 epochs/day
+# Production Training (Medium Model) - AlphaZero Style
+# Pure MCTS training (no TSS) - faster and follows AlphaZero methodology
+# TSS is used during inference/evaluation, not training
+# Expected: 20-30 min/epoch on CUDA, 15-30 epochs/day
 # =============================================================================
 
 train-production:
@@ -75,17 +77,17 @@ train-production:
 		--model-preset medium \
 		--epochs 200 \
 		--selfplay-games 200 \
-		--mcts-simulations 600 \
-		--batch-size 512 \
+		--mcts-simulations 400 \
+		--batch-size 1024 \
 		--lr 1e-3 \
 		--min-lr 1e-6 \
 		--warmup-epochs 10 \
 		--lr-schedule cosine \
 		--map-size-gb 32 \
 		--buffer-max-size 5000000 \
-		--batch-size-mcts 96 \
+		--batch-size-mcts 128 \
 		--parallel-workers 1 \
-		--difficulty medium \
+		--difficulty easy \
 		--device auto \
 		--resume auto \
 		--eval-frequency 10 \
@@ -245,18 +247,25 @@ show-config:
 	@echo ""
 	@echo "FAST (Development):"
 	@echo "  Model: small (1.2M params)"
-	@echo "  Time: ~10-15 min/epoch"
+	@echo "  Difficulty: easy (pure MCTS, no TSS)"
+	@echo "  Time: ~5-10 min/epoch on CUDA"
 	@echo "  Usage: make train-fast"
 	@echo ""
 	@echo "BALANCED (Recommended):"
 	@echo "  Model: small (1.2M params)"
-	@echo "  Time: ~15-25 min/epoch"
+	@echo "  Difficulty: easy (pure MCTS, AlphaZero style)"
+	@echo "  Time: ~10-20 min/epoch on MPS, ~5-10 on CUDA"
 	@echo "  Usage: make train"
 	@echo ""
 	@echo "PRODUCTION (Maximum Strength):"
 	@echo "  Model: medium (3M params)"
-	@echo "  Time: ~40-60 min/epoch"
+	@echo "  Difficulty: easy (pure MCTS, network learns threats)"
+	@echo "  Time: ~20-30 min/epoch on CUDA"
 	@echo "  Usage: make train-production"
+	@echo ""
+	@echo "NOTE: All configs use 'difficulty: easy' during training"
+	@echo "      TSS is used during inference/evaluation for stronger play"
+	@echo "      This follows AlphaZero methodology (pure self-play)"
 	@echo ""
 	@echo "DYNAMIC (Hardware-optimized):"
 	@echo "  Automatically detects your hardware"

@@ -84,17 +84,21 @@ python scripts/train.py \
     --batch-size 1024 \
     --batch-size-mcts 128 \
     --selfplay-games 200 \
-    --mcts-simulations 600 \
+    --mcts-simulations 400 \
+    --difficulty easy \
     --epochs 200 \
     --eval-frequency 10 \
-    --device cuda
+    --device cuda \
+    --resume auto
 ```
 
 **Expected Performance:**
-- Time per epoch: ~30-40 minutes
-- Total training time: ~4-5 days
+- Time per epoch: ~20-30 minutes (with `difficulty: easy`)
+- Total training time: ~3-4 days
 - Final Elo: 1800-1900+
 - Total cost: ~$50-70
+
+**Note:** We use `--difficulty easy` (pure MCTS, no TSS) for training. This is **4-6x faster** and follows AlphaZero methodology. TSS is used during inference/evaluation for stronger play. See [docs/TRAINING_PHILOSOPHY.md](TRAINING_PHILOSOPHY.md) for details.
 
 **Providers:**
 - **Lambda Labs**: $0.70/hour (RTX 4090)
