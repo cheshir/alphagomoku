@@ -32,6 +32,11 @@ class RecommendedConfig:
     selfplay_games: int
     expected_memory_gb: float
     notes: str
+    # Training hyperparameters (with defaults)
+    difficulty: str = "easy"  # Always easy for training (AlphaZero style)
+    mcts_simulations: int = 400  # Default MCTS simulations
+    map_size_gb: int = 32  # LMDB map size
+    buffer_max_size: int = 5_000_000  # Replay buffer size
 
 
 def detect_hardware() -> HardwareInfo:
@@ -231,8 +236,15 @@ def print_recommended_config(
     print(f"Training Batch Size: {config.batch_size}")
     print(f"MCTS Batch Size: {config.batch_size_mcts}")
     print(f"Self-Play Games/Epoch: {config.selfplay_games}")
+    print(f"MCTS Simulations: {config.mcts_simulations}")
+    print(f"Difficulty: {config.difficulty} (pure MCTS, no TSS - AlphaZero style)")
+    print(f"Map Size: {config.map_size_gb} GB")
+    print(f"Buffer Max Size: {config.buffer_max_size:,}")
     print(f"Expected Memory Usage: ~{config.expected_memory_gb:.1f} GB")
     print(f"\nNotes: {config.notes}")
+    print(f"\nℹ️  Difficulty 'easy' = Pure MCTS (fast, GPU-accelerated)")
+    print(f"   TSS is used during inference/evaluation, not training")
+    print(f"   See docs/TRAINING_PHILOSOPHY.md for details")
 
     if show_command:
         print("\n" + "-" * 70)
@@ -244,7 +256,17 @@ def print_recommended_config(
         print(f"    --batch-size {config.batch_size} \\")
         print(f"    --batch-size-mcts {config.batch_size_mcts} \\")
         print(f"    --selfplay-games {config.selfplay_games} \\")
-        print(f"    --device auto")
+        print(f"    --mcts-simulations {config.mcts_simulations} \\")
+        print(f"    --difficulty {config.difficulty} \\")
+        print(f"    --map-size-gb {config.map_size_gb} \\")
+        print(f"    --buffer-max-size {config.buffer_max_size} \\")
+        print(f"    --epochs 200 \\")
+        print(f"    --lr 1e-3 \\")
+        print(f"    --min-lr 1e-6 \\")
+        print(f"    --warmup-epochs 10 \\")
+        print(f"    --lr-schedule cosine \\")
+        print(f"    --device auto \\")
+        print(f"    --resume auto")
 
     print("=" * 70)
 

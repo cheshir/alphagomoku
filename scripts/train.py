@@ -461,7 +461,17 @@ def main():
     
     print(f"MCTS simulations: {args.mcts_simulations} (adaptive: {args.adaptive_sims})")
     print(f"MCTS batch size: {args.batch_size_mcts}")
-    print(f"Unified search difficulty: {args.difficulty} (includes MCTS + TSS + Endgame solver)")
+
+    # Describe what each difficulty level actually includes
+    difficulty_descriptions = {
+        'easy': 'MCTS only (pure AlphaZero, no TSS/endgame - fast, GPU-accelerated)',
+        'medium': 'MCTS + TSS + Endgame solver (tactical, slower)',
+        'strong': 'MCTS + TSS + Endgame solver (maximum settings, slowest)'
+    }
+    difficulty_desc = difficulty_descriptions.get(args.difficulty, 'unknown')
+    print(f"Search configuration: {args.difficulty} ({difficulty_desc})")
+    print(f"   ℹ️  Training with 'easy' is recommended (4-6x faster, AlphaZero methodology)")
+    print(f"   ℹ️  Use 'medium' or 'strong' for inference/evaluation, not training")
     
     start_epoch = 0
     training_history = {'loss': [], 'policy_acc': [], 'value_mae': [], 'epoch_times': []}
