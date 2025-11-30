@@ -374,6 +374,11 @@ class MCTS:
 
             sims_done += self._process_batch_leaves_optimized(leaves, device)
 
+            # Periodically clear MPS cache to prevent memory accumulation
+            # Only needed for MPS; CUDA handles memory better
+            if device.type == 'mps' and sims_done % 100 == 0:
+                torch.mps.empty_cache()
+
     def _collect_leaves_for_batch(
         self, sims_done: int
     ) -> Tuple[List[Tuple[MCTSNode, List[MCTSNode]]], int]:
@@ -469,23 +474,20 @@ class MCTS:
         if not torch.isfinite(policies_t).all() or not torch.isfinite(values_t).all():
             raise ValueError("Model produced non-finite outputs during batched evaluation")
 
-        # CRITICAL: Move tensors to CPU immediately to prevent MPS memory leak
-        # During MCTS, hundreds of batches are processed and tensors accumulate on MPS
-        policies_cpu = policies_t.cpu()
-        values_cpu = values_t.cpu()
-        legal_masks_cpu = legal_masks.cpu()
-
-        # Explicitly delete GPU tensors
-        del batch_states, legal_masks, policies_t, values_t
+        # Keep tensors on device for performance
+        # Note: Renamed to indicate these stay on device (not necessarily CPU)
+        policies_device = policies_t
+        values_device = values_t
+        legal_masks_device = legal_masks
 
         # Apply legal masks and normalize per leaf, then expand and backup
         for i, (node, path) in enumerate(leaves):
-            policy = policies_cpu[i]
-            legal_mask = legal_masks_cpu[i]
+            policy = policies_device[i]
+            legal_mask = legal_masks_device[i]
             policy = policy * legal_mask
             policy = policy / (policy.sum() + self.config.policy_epsilon)
 
-            value = float(values_cpu[i].item())
+            value = float(values_device[i].item())
 
             # Convert to numpy for opening boost
             policy_np = policy.detach().numpy()
@@ -578,8 +580,8 @@ class MCTS:
                 distance=2,  # Consider positions 2 squares away
             )
 
-        value_float = float(value_t.item())
-        return policy, value_float
+        # value_t is already a Python float from predict()
+        return policy, value_t
 
     def reuse_subtree(self, action: int):
         """Reuse subtree after making a move"""
