@@ -557,7 +557,8 @@ class MCTS:
         legal_mask_np = (node.state.reshape(-1) == 0).astype(np.float32)
         legal_mask = torch.from_numpy(legal_mask_np).to(device)
 
-        if not torch.isfinite(policy_t).all() or not torch.isfinite(value_t).all():
+        # Check for non-finite values (value_t is already a Python float from .item())
+        if not torch.isfinite(policy_t).all() or not np.isfinite(value_t):
             raise ValueError("Model produced non-finite outputs during evaluation")
 
         policy_t = policy_t * legal_mask
