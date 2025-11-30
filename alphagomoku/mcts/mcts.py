@@ -489,8 +489,8 @@ class MCTS:
 
             value = float(values_device[i].item())
 
-            # Convert to numpy for opening boost
-            policy_np = policy.detach().numpy()
+            # Convert to numpy for opening boost (move to CPU only when needed)
+            policy_np = policy.detach().cpu().numpy()
 
             # Boost opening moves if this is the ROOT node with 1 opponent stone
             is_root = (node == self.root)
