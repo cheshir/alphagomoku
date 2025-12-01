@@ -1,6 +1,10 @@
 # AlphaGomoku Makefile - Optimized Training Configurations
 # Based on refactoring plan - using model presets and proper hyperparameters
 
+# Load environment variables from .env file if it exists
+-include .env
+export
+
 venv:
 	conda activate alphagomoku
 
@@ -319,8 +323,122 @@ help:
 	@echo "  make clean-checkpoints - Keep only 5 latest checkpoints"
 	@echo "  make clean-data       - Delete all training data (WARNING)"
 	@echo ""
+	@echo "🌐 Distributed Training:"
+	@echo "  make distributed-help - Show distributed training guide"
+	@echo "  make distributed-selfplay-cpu-workers - Start 6 CPU self-play workers"
+	@echo "  make distributed-selfplay-mps-worker  - Start 1 MPS self-play worker"
+	@echo "  make distributed-training-gpu         - Start GPU training worker"
+	@echo "  make distributed-monitor              - Monitor queue status"
+	@echo ""
 	@echo "📖 For more info: see README.md or WHATS_NEW.md"
+
+# =============================================================================
+# Distributed Training (Mac Self-Play + Colab Training)
+# =============================================================================
+
+# Distributed Self-Play Workers (CPU) - Run on Mac M1 Pro
+distributed-selfplay-cpu-workers:
+	OMP_NUM_THREADS=1 \
+	python scripts/distributed_selfplay_manager.py \
+		--redis-url "$$REDIS_URL" \
+		--num-workers 6 \
+		--model-preset medium \
+		--mcts-simulations 50 \
+		--device cpu \
+		--batch-size 10 \
+		--model-update-frequency 10 \
+		--batch-size-mcts 128
+
+# Distributed Self-Play Worker (MPS) - Run on Mac M1 Pro with Apple Silicon acceleration
+distributed-selfplay-mps-worker:
+	PYTORCH_ENABLE_MPS_FALLBACK=0 \
+	OMP_NUM_THREADS=1 \
+	python scripts/distributed_selfplay_manager.py \
+		--redis-url "$$REDIS_URL" \
+		--num-workers 1 \
+		--model-preset medium \
+		--mcts-simulations 100 \
+		--device mps \
+		--batch-size 10 \
+		--model-update-frequency 10 \
+		--batch-size-mcts 64
+
+# Distributed Training Worker (GPU) - Run on Colab T4
+distributed-training-gpu:
+	PYTORCH_ENABLE_MPS_FALLBACK=0 \
+	OMP_NUM_THREADS=1 \
+	python scripts/distributed_training_worker.py \
+		--redis-url "$$REDIS_URL" \
+		--model-preset medium \
+		--batch-size 1024 \
+		--device cuda \
+		--lr 1e-3 \
+		--min-lr 1e-6 \
+		--warmup-epochs 10 \
+		--publish-frequency 5 \
+		--checkpoint-dir ./checkpoints_distributed \
+		--min-games-for-training 50 \
+		--games-per-training-batch 50
+
+# Monitor distributed queue status
+distributed-monitor:
+	python scripts/monitor_queue.py \
+		--redis-url "$$REDIS_URL" \
+		--refresh 5
+
+# =============================================================================
+# Distributed Training - Combined Commands
+# =============================================================================
+
+distributed-help:
+	@echo "Distributed Training Setup for AlphaGomoku"
+	@echo ""
+	@echo "Architecture (Producer-Consumer Pattern):"
+	@echo "  Worker Threads → Local Queue → Accumulator → Redis → Training Worker"
+	@echo "  Model Updater → Checkpoints (version-based sync)"
+	@echo ""
+	@echo "Setup Steps:"
+	@echo "  1. Setup Redis"
+	@echo "  2. Set REDIS_URL in .env file:"
+	@echo "     REDIS_URL=redis://:password@queue.cheshir.me:6379/0"
+	@echo "  3. Start self-play workers on Mac:"
+	@echo "     make distributed-selfplay-cpu-workers  # 6 CPU workers (unified manager)"
+	@echo "     OR"
+	@echo "     make distributed-selfplay-mps-worker   # 1 MPS worker (unified manager)"
+	@echo "  4. Start training worker on Colab:"
+	@echo "     make distributed-training-gpu"
+	@echo "  5. Monitor queue status:"
+	@echo "     make distributed-monitor"
+	@echo ""
+	@echo "Commands:"
+	@echo "  make distributed-selfplay-cpu-workers  - Start unified manager with 6 CPU workers"
+	@echo "  make distributed-selfplay-mps-worker   - Start unified manager with 1 MPS worker"
+	@echo "  make distributed-training-gpu          - Start GPU training worker"
+	@echo "  make distributed-monitor               - Monitor queue status"
+	@echo ""
+	@echo "New Architecture Benefits:"
+	@echo "  ✓ Producer-consumer pattern for efficient batching"
+	@echo "  ✓ Workers generate games independently (no coordination overhead)"
+	@echo "  ✓ Accumulator batches games from all workers for Redis"
+	@echo "  ✓ Version-based model sync (lock-free, eventual consistency)"
+	@echo "  ✓ Unified dashboard with live statistics"
+	@echo "  ✓ Each worker has own model copy (no race conditions)"
+	@echo ""
+	@echo "Resource Allocation:"
+	@echo "  Mac M1 Pro (6 CPU workers):"
+	@echo "    - Medium model, 50 MCTS sims"
+	@echo "    - ~2-3 min/game, ~20-30 games/hour/worker"
+	@echo "    - Total: 120-180 games/hour"
+	@echo ""
+	@echo "  Colab T4 GPU (1 training worker):"
+	@echo "    - Medium model, batch 1024"
+	@echo "    - ~3-5 min per 50-game training batch"
+	@echo "    - Can process ~600-1000 games/hour"
+	@echo ""
+	@echo "For more info: see docs/TRAINING.md#distributed-training"
 
 .PHONY: venv train train-fast train-production train-legacy train-cuda train-mps train-cpu \
         evaluate-latest test-tactical-latest test test-all \
-        clean-checkpoints clean-data show-config help
+        clean-checkpoints clean-data show-config help \
+        distributed-selfplay-cpu-workers distributed-selfplay-mps-worker \
+        distributed-training-gpu distributed-monitor distributed-help

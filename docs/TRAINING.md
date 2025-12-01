@@ -13,6 +13,7 @@ Complete guide to training strong Gomoku AI models using AlphaZero-style reinfor
 5. [Performance Expectations](#performance-expectations)
 6. [Troubleshooting](#troubleshooting)
 7. [Cloud Training](#cloud-training)
+8. [Distributed Training](#distributed-training)
 
 ---
 
@@ -836,9 +837,473 @@ See [docs/CLOUD_VM_RECOMMENDATIONS.md](CLOUD_VM_RECOMMENDATIONS.md) for comprehe
 
 ---
 
+## Distributed Training
+
+Distributed training allows you to separate self-play generation (CPU-bound) from neural network training (GPU-bound), enabling efficient use of multiple machines.
+
+### Architecture Overview
+
+```mermaid
+graph LR
+    A[Mac M1 Pro<br/>Self-Play Workers<br/>6-8 CPU workers] -->|Push Games| B[Redis Queue<br/>REDIS_DOMAIN]
+    B -->|Pull Games| C[Colab T4 GPU<br/>Training Worker<br/>Batch training]
+    C -->|Push Model| B
+    B -->|Pull Model| A
+
+    style A fill:#e1f5ff,stroke:#01579b,stroke-width:2px
+    style B fill:#fff3e0,stroke:#e65100,stroke-width:2px
+    style C fill:#e8f5e9,stroke:#1b5e20,stroke-width:2px
+```
+
+### Detailed Sequence Diagram
+
+```mermaid
+sequenceDiagram
+    participant SW as Self-Play Worker<br/>(Mac M1 Pro - CPU)
+    participant RQ as Redis Queue<br/>(REDIS_DOMAIN)
+    participant TW as Training Worker<br/>(Colab T4 - GPU)
+
+    Note over SW,TW: Initial Setup
+    TW->>RQ: Initialize with random model
+    RQ->>RQ: Store initial model in RAM
+    SW->>RQ: Pull initial model
+    SW->>SW: Load model weights
+
+    Note over SW,TW: Training Loop (Continuous)
+
+    loop Self-Play Generation (Every ~10 minutes)
+        SW->>SW: Generate game via MCTS
+        SW->>SW: Create training positions<br/>(board, policy, value)
+        SW->>RQ: push_games(game_data)
+        RQ->>RQ: Store in queue (pickle)
+        Note right of SW: Worker generates<br/>20-30 games/hour
+    end
+
+    loop Model Update Check (Every 10 games)
+        SW->>RQ: pull_model(timeout=0)
+        alt New model available
+            RQ->>SW: Return model weights + metadata
+            SW->>SW: model.load_state_dict()
+            Note right of SW: Hot-swap to new model
+        else No new model
+            RQ->>SW: Return None
+            Note right of SW: Continue with current model
+        end
+    end
+
+    loop Training (Continuous when games available)
+        TW->>RQ: get_stats()
+        RQ->>TW: queue_size, workers_count
+
+        alt Queue has 50+ games
+            TW->>RQ: pull_games(batch_size=50)
+            RQ->>TW: Return 50 games (unpickle)
+            TW->>TW: Train on batch (GPU)<br/>Forward + Backward pass
+            TW->>TW: Update weights via SGD
+            Note right of TW: GPU at 80-95% utilization
+
+            alt Every 5 training iterations
+                TW->>TW: model_state = model.state_dict()
+                TW->>TW: Move tensors to CPU for serialization
+                TW->>RQ: push_model(model_state, metadata)
+                RQ->>RQ: Store as "latest_model" (pickle)
+                RQ->>RQ: Publish notification to workers
+                Note right of TW: Model ~50MB in Redis RAM
+                TW->>TW: Save local checkpoint
+            end
+        else Queue has < 50 games
+            TW->>TW: Sleep 10 seconds
+            Note right of TW: Wait for more games
+        end
+    end
+
+    Note over SW,TW: Model Synchronization Flow
+    rect rgb(200, 230, 255)
+        TW->>RQ: push_model(weights, iteration=100)
+        RQ->>RQ: redis.set("latest_model", data)
+        SW->>RQ: pull_model() [every 10 games]
+        RQ->>SW: Latest model (iteration=100)
+        SW->>SW: Update model in-memory
+        SW->>SW: Use for next 10 games
+    end
+
+    Note over SW,TW: No Manual Sync Required!<br/>Everything automatic via Redis
+```
+
+**Key Benefits:**
+- Use your local Mac for self-play (cheap, always available)
+- Use cloud GPU for training (expensive, pay only when training)
+- Decouple self-play from training (no GPU idle time during self-play)
+- Scale self-play workers independently
+
+### How It Works
+
+1. **Self-Play Workers** (Mac M1 Pro):
+   - Run 6-8 CPU workers generating games continuously
+   - Push game data to Redis queue
+   - Fetch latest trained models every 10 batches
+   - Each worker: 20-30 games/hour
+
+2. **Redis Queue**:
+   - Stores game data (pickle serialized)
+   - Stores trained models (latest 5)
+   - Tracks statistics and worker heartbeats
+   - Web UI for monitoring (Redis Commander)
+
+3. **Training Worker** (Colab T4):
+   - Pulls batches of games from queue
+   - Trains neural network on GPU
+   - Publishes updated models every 5 batches
+   - Can process 600-1000 games/hour
+
+### Setup Instructions
+
+#### Step 1: Setup Redis
+
+#### Step 2: Configure Environment Variables
+
+On both Mac and Colab, set the Redis URL:
+
+```bash
+# Mac (add to ~/.zshrc or ~/.bashrc)
+export REDIS_URL='redis://:your_secure_password_here@REDIS_DOMAIN:6379/0'
+
+# Colab (in notebook cell)
+import os
+os.environ['REDIS_URL'] = 'redis://:your_secure_password_here@REDIS_DOMAIN:6379/0'
+```
+
+#### Step 3: Start Self-Play Workers on Mac
+
+**Option A: CPU Workers (Recommended)**
+```bash
+# Start 6 CPU workers in parallel
+make distributed-selfplay-cpu-workers
+```
+
+**Option B: MPS Worker (Alternative)**
+```bash
+# Start 1 MPS worker (uses Apple Silicon GPU)
+make distributed-selfplay-mps-worker
+```
+
+**Manual Start (if Makefile doesn't work):**
+```bash
+python scripts/distributed_selfplay_worker.py \
+    --redis-url "$REDIS_URL" \
+    --model-preset small \
+    --mcts-simulations 50 \
+    --device cpu \
+    --worker-id mac-worker-1
+```
+
+#### Step 4: Start Training Worker on Colab
+
+**Using Makefile:**
+```bash
+make distributed-training-gpu
+```
+
+**Manual Start:**
+```bash
+python scripts/distributed_training_worker.py \
+    --redis-url "$REDIS_URL" \
+    --model-preset medium \
+    --batch-size 1024 \
+    --device cuda
+```
+
+#### Step 5: Monitor Queue Status
+
+```bash
+make distributed-monitor
+```
+
+This will show:
+- Queue size (game batches waiting)
+- Active workers (self-play + training)
+- Statistics (games pushed/pulled, models published)
+- Real-time rates (games/hour)
+
+### Resource Requirements
+
+#### Mac M1 Pro (Self-Play Workers)
+
+| Configuration | Workers | Games/Hour | CPU Usage | Memory |
+|---------------|---------|------------|-----------|--------|
+| **Recommended** | 6 CPU | 120-180 | 60-80% | 4-6 GB |
+| **Alternative** | 1 MPS | 30-40 | 20-30% | 2-3 GB |
+
+**Recommended Setup:**
+```bash
+# 6 CPU workers (optimal for M1 Pro 6+2 cores)
+make distributed-selfplay-cpu-workers
+
+# Settings:
+# - Model: small (1.2M params, fast inference)
+# - MCTS: 50 simulations (good balance)
+# - Device: CPU (better for parallel workers)
+# - Batch: 10 games per push
+```
+
+#### Colab T4 GPU (Training Worker)
+
+| Configuration | Batch Size | Processing Rate | GPU Util | VRAM |
+|---------------|------------|-----------------|----------|------|
+| **Optimal** | 1024 | 600-1000 games/hour | 80-95% | 6-8 GB |
+
+**Optimal Settings:**
+```bash
+# Training worker on T4
+make distributed-training-gpu
+
+# Settings:
+# - Model: medium (3M params)
+# - Batch: 1024 (good GPU utilization)
+# - Device: CUDA
+# - Publish: every 5 training batches
+```
+
+### Performance Calculations
+
+#### Self-Play Generation
+
+**Mac M1 Pro with 6 CPU workers:**
+```
+Per worker:
+  - Game time: 2-3 minutes
+  - Games/hour: 20-30
+
+Total (6 workers):
+  - Games/hour: 120-180
+  - Games/day: 2,880-4,320
+  - Positions/day: ~600,000-900,000
+```
+
+#### Training Processing
+
+**Colab T4 GPU:**
+```
+Training batch (50 games, ~10,000 positions):
+  - Time: 3-5 minutes
+  - Batches/hour: 12-20
+  - Games/hour: 600-1000
+  - Can keep up with 6-8 self-play workers
+```
+
+#### Overall Throughput
+
+| Metric | Mac (Self-Play) | Colab (Training) | Balanced? |
+|--------|-----------------|------------------|-----------|
+| Games/hour | 120-180 | 600-1000 | ✓ Yes |
+| Queue growth | +120-180/hour | -600-1000/hour | ✓ Training faster |
+| Cost/day | $0 (local) | ~$2-3 (Colab Pro) | ✓ Affordable |
+
+**Result:** Training worker can process games faster than self-play generates them. Queue will stay small (< 50 batches).
+
+### Cost Analysis
+
+#### Monthly Cost (24/7 Operation)
+
+| Component | Platform | Cost/Hour | Hours/Month | Monthly Cost |
+|-----------|----------|-----------|-------------|--------------|
+| Self-Play | Mac M1 Pro | $0 | 720 | **$0** |
+| Redis Queue | Coolify/Cloud | ~$0.01 | 720 | **$7** |
+| Training | Colab Pro | $0.10 | 720 | **$72** |
+| **Total** | | | | **$79/month** |
+
+**Cost Optimization:**
+- Use Colab free tier: Run 12 hours/day = $0/month training
+- Spot instances: ~50% savings on training worker
+- Local Redis: Run Redis on Mac = save $7/month
+
+**Realistic Cost (Colab Free + Local Redis):**
+- Self-play: $0 (local Mac)
+- Redis: $0 (local Docker)
+- Training: $0 (Colab free tier, 12 hours/day)
+- **Total: $0/month** for hobbyist setup!
+
+### Monitoring and Debugging
+
+#### Using the Monitor
+
+```bash
+make distributed-monitor
+```
+
+**Monitor shows:**
+```
+==================================================================
+  AlphaGomoku Distributed Training Queue Monitor
+==================================================================
+  Time: 2025-12-01 10:30:45 | Uptime: 02:15:30
+
+  Connection: ✓ Healthy
+
+──────────────────────────────────────────────────────────────────
+  QUEUE STATUS
+──────────────────────────────────────────────────────────────────
+  Game Batches:     23 ███████████████████████
+  Models Available: 5
+
+──────────────────────────────────────────────────────────────────
+  ACTIVE WORKERS
+──────────────────────────────────────────────────────────────────
+  Self-Play Workers: 6
+  Training Workers:  1
+
+──────────────────────────────────────────────────────────────────
+  STATISTICS
+──────────────────────────────────────────────────────────────────
+  Games Pushed:  1,234 (180.0/hour)
+  Games Pulled:  987 (720.0/hour)
+  Models Pushed: 15
+  Models Pulled: 90
+```
+
+#### Redis Commander UI
+
+Access at `https://REDIS_DOMAIN`:
+- View queue contents
+- Inspect serialized data
+- Monitor memory usage
+- Clear queues (if needed)
+
+#### Common Issues
+
+**Issue 1: Queue Growing Too Fast**
+
+**Symptom:** Queue size keeps increasing
+
+**Solutions:**
+- Training worker is too slow: increase `--batch-size` or use better GPU
+- Too many self-play workers: reduce from 6 to 4
+- Training worker crashed: restart it
+
+**Issue 2: No Games in Queue**
+
+**Symptom:** Queue size is 0, training worker waiting
+
+**Solutions:**
+- Self-play workers not running: start them
+- Self-play workers crashed: check logs
+- Redis connection issue: verify `REDIS_URL`
+
+**Issue 3: Workers Not Updating Model**
+
+**Symptom:** Self-play workers using old model
+
+**Solutions:**
+- Check `--model-update-frequency` (default: every 10 batches)
+- Training worker not publishing: check `--publish-frequency`
+- Model too large for Redis: reduce model size
+
+### Advanced Configuration
+
+#### Scaling Self-Play Workers
+
+**Running on multiple Macs:**
+```bash
+# Mac 1
+make distributed-selfplay-cpu-workers  # 6 workers
+
+# Mac 2
+python scripts/distributed_selfplay_worker.py \
+    --redis-url "$REDIS_URL" \
+    --worker-id mac2-worker-1 \
+    ...
+```
+
+#### Multiple Training Workers
+
+**Using multiple GPUs:**
+```bash
+# Colab 1 (T4)
+make distributed-training-gpu
+
+# Colab 2 (T4)
+python scripts/distributed_training_worker.py \
+    --redis-url "$REDIS_URL" \
+    --checkpoint-dir ./checkpoints_worker2 \
+    ...
+```
+
+**Note:** Multiple training workers will compete for games. Ensure enough self-play throughput.
+
+### Comparison: Distributed vs. Single-Machine
+
+| Aspect | Single Machine | Distributed |
+|--------|----------------|-------------|
+| **Hardware** | 1 GPU machine | Mac + Cloud GPU |
+| **Cost** | $0.50-1.00/hour | $0.10/hour (Colab) |
+| **Flexibility** | Must run continuously | Self-play runs locally |
+| **Scaling** | Limited by GPU | Scale self-play easily |
+| **Efficiency** | GPU idle during self-play | GPU only for training |
+| **Setup** | Simple | More complex |
+| **Best For** | Short training runs | Long-term training |
+
+**When to Use Distributed:**
+- Training for 1+ weeks
+- Want to use local Mac for self-play
+- Need to minimize cloud GPU costs
+- Want to scale self-play independently
+
+**When to Use Single-Machine:**
+- Training for < 3 days
+- Have powerful local GPU (RTX 4090)
+- Want simpler setup
+- Don't mind GPU idle time
+
+### Example Training Session
+
+**Scenario:** Train for 1 week (168 hours)
+
+**Setup:**
+1. Mac M1 Pro: 6 CPU self-play workers
+2. Colab T4: 1 training worker (12 hours/day)
+3. Redis queue on Coolify/VM/Cloud
+
+**Results:**
+```
+Self-Play (168 hours):
+  - Games generated: ~25,000
+  - Positions: ~5,000,000
+  - Cost: $0
+
+Training (84 hours at 12h/day):
+  - Training iterations: ~1,000
+  - Models published: ~200
+  - Cost: $0 (Colab free tier)
+
+Total Cost: $0
+Model Strength: Elo ~1600-1700
+```
+
+### Quick Start Commands
+
+```bash
+# 1. Set Redis URL
+export REDIS_URL='redis://:password@REDIS_DOMAIN:6379/0'
+
+# 2. Start self-play workers (Mac)
+make distributed-selfplay-cpu-workers
+
+# 3. Start training worker (Colab)
+make distributed-training-gpu
+
+# 4. Monitor (separate terminal)
+make distributed-monitor
+
+# 5. Get help
+make distributed-help
+```
+
+---
+
 ## References
 
 - AlphaGo Zero paper: "Mastering the game of Go without human knowledge"
 - AlphaZero paper: "A general reinforcement learning algorithm that masters chess, shogi, and Go through self-play"
 - PyTorch Multiprocessing Best Practices: https://pytorch.org/docs/stable/notes/multiprocessing.html
 - CUDA and Fork Issue: https://discuss.pytorch.org/t/using-cuda-with-multiprocessing/6719
+- Redis Documentation: https://redis.io/docs/

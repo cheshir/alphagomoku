@@ -7,6 +7,9 @@ numpy>=1.26.0
 lmdb>=1.4.0
 zarr>=2.14.0
 
+# Distributed training
+redis>=5.0.0
+
 # Training utilities
 tensorboard>=2.13.0
 tqdm>=4.65.0

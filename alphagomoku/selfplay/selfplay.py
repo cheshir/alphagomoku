@@ -36,6 +36,7 @@ class SelfPlayWorker:
         batch_size: int = 64,
         difficulty: str = "medium",
         epoch: int = 0,
+        disable_tqdm: bool = False,
     ):
         self.model = model
         self.board_size = board_size
@@ -43,6 +44,7 @@ class SelfPlayWorker:
         self.adaptive_sims = adaptive_sims
         self.difficulty = difficulty
         self.epoch = epoch
+        self.disable_tqdm = disable_tqdm
         self.env = GomokuEnv(board_size)
 
         # Get TSS config for current training epoch
@@ -168,12 +170,24 @@ class SelfPlayWorker:
     def generate_batch(self, num_games: int) -> List[SelfPlayData]:
         """Generate multiple self-play games"""
         all_data = []
-        game_pbar = tqdm(
-            range(num_games), desc="Self-play", leave=False, unit="game", position=1
-        )
+
+        # Conditionally create progress bar based on disable_tqdm flag
+        if not self.disable_tqdm:
+            game_pbar = tqdm(
+                range(num_games), desc="Self-play", leave=False, unit="game", position=1
+            )
+        else:
+            game_pbar = range(num_games)
+
         for i in game_pbar:
             game_data = self.generate_game()
             all_data.extend(game_data)
-            game_pbar.set_postfix({'positions': len(all_data)})
-        game_pbar.close()
+            # Only update postfix if using tqdm
+            if not self.disable_tqdm:
+                game_pbar.set_postfix({'positions': len(all_data)})
+
+        # Only close if using tqdm
+        if not self.disable_tqdm:
+            game_pbar.close()
+
         return all_data

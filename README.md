@@ -226,6 +226,83 @@ make train
 python scripts/train.py --resume checkpoints/model_epoch_50.pt
 ```
 
+## 🌐 Distributed Training
+
+**NEW:** Train 4-6x faster by separating self-play (CPU) from training (GPU)!
+
+### Architecture
+
+```mermaid
+sequenceDiagram
+    participant WT as Worker Threads<br/>(6x CPU)
+    participant LQ as Local Queue<br/>(in-memory)
+    participant AC as Accumulator<br/>(batching)
+    participant RQ as Redis Queue<br/>(REDIS_DOMAIN)
+    participant TW as Training Worker<br/>(Colab - GPU)
+    participant MU as Model Updater<br/>(version sync)
+
+    Note over WT,MU: Producer-Consumer Architecture
+
+    loop Workers Generate Games
+        WT->>WT: Generate single game
+        WT->>LQ: push(game positions)
+        Note right of WT: Each worker independent<br/>No coordination overhead
+    end
+
+    loop Accumulator Batches
+        AC->>LQ: pull games (non-blocking)
+        AC->>AC: Accumulate 10 games
+        AC->>RQ: push_games(batch)
+        AC->>MU: Signal check for model
+        Note right of AC: Steady data flow<br/>vs burst pattern
+    end
+
+    loop Training (600-1000 games/hour)
+        TW->>RQ: pull_games(batch=50)
+        TW->>TW: Train on GPU
+        TW->>RQ: push_model(v{N})
+        Note right of TW: GPU at 80-95%<br/>utilization
+    end
+
+    loop Model Sync (version-based)
+        MU->>RQ: pull_model()
+        MU->>MU: Save checkpoint v{N}
+        MU->>MU: Update version number
+        WT->>WT: Check version (lock-free)
+        WT->>WT: Load checkpoint if new
+        Note right of WT: Eventual consistency<br/>No blocking
+    end
+```
+
+### Quick Start
+
+**1. Setup Redis**
+
+**2. Start Self-Play Workers (Mac M1 Pro):**
+```bash
+# Add to .env file:
+REDIS_URL=redis://:password@REDIS_DOMAIN:6379/0
+
+# Start unified manager with 6 CPU workers
+make distributed-selfplay-cpu-workers
+```
+
+**3. Start Training Worker (Colab/Cloud GPU):**
+- Open `train_universal.ipynb` in Colab
+- Set `TRAINING_MODE = "distributed"`
+- Set `REDIS_URL`
+- Run all cells
+
+**New Architecture Benefits:**
+- ✅ **Producer-consumer pattern**: Workers generate games independently, accumulator batches for Redis
+- ✅ **Version-based model sync**: Lock-free updates, no race conditions, eventual consistency
+- ✅ **Unified dashboard**: Live statistics from all workers in one place
+- ✅ **Efficient batching**: Steady data flow instead of burst pattern
+- ✅ **4-6x faster training**: CPU and GPU work in parallel
+- ✅ **Cost-effective**: Use free Colab T4 GPU + local Mac CPU ($0-10/month vs $60-120 for dedicated GPU)
+
+See [docs/TRAINING.md#distributed-training](docs/TRAINING.md#distributed-training) for detailed setup.
+
 ## 🧪 Testing
 
 ```bash
