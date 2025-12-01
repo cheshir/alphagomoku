@@ -242,26 +242,27 @@ pytest tests/unit/test_model.py -v
 ## 📖 Documentation
 
 ### Getting Started
-- [WHATS_NEW.md](WHATS_NEW.md) - What changed in refactoring
-- [docs/QUICKSTART.md](docs/QUICKSTART.md) - 5-minute quick start guide
-- [REFACTORING_SUMMARY.md](REFACTORING_SUMMARY.md) - Technical details
+- [docs/QUICKSTART.md](docs/QUICKSTART.md) - Installation and first steps (5 minutes)
+- [docs/TRAINING.md](docs/TRAINING.md) - **⭐ Complete training guide** (philosophy, GPU/CPU architecture, cloud setup)
+- [docs/CLOUD_VM_RECOMMENDATIONS.md](docs/CLOUD_VM_RECOMMENDATIONS.md) - Cloud GPU recommendations and cost analysis
 
-### Training & Evaluation
-- [docs/TRAINING_PHILOSOPHY.md](docs/TRAINING_PHILOSOPHY.md) - **⭐ Training strategy (pure MCTS vs TSS)**
-- [COLAB_TRAINING.md](COLAB_TRAINING.md) - Train on Google Colab
-- [HARDWARE_AUTO_CONFIG.md](HARDWARE_AUTO_CONFIG.md) - Hardware optimization
-- [docs/CLOUD_VM_RECOMMENDATIONS.md](docs/CLOUD_VM_RECOMMENDATIONS.md) - Cloud GPU recommendations
-- `make help` - See all training commands
-
-### Architecture & Design
-- [docs/PROJECT_DESCRIPTION.md](docs/PROJECT_DESCRIPTION.md) - Original specification
-- [docs/TSS.md](docs/TSS.md) - Threat-Space Search details
+### Features & Architecture
+- [docs/TSS.md](docs/TSS.md) - Threat Space Search (when to use, configuration, usage)
+- [docs/OPENING_STRATEGY.md](docs/OPENING_STRATEGY.md) - Opening book strategy
+- [docs/FORCED_WINS_VERIFIED.md](docs/FORCED_WINS_VERIFIED.md) - Endgame solver verification
+- [docs/PROJECT_DESCRIPTION.md](docs/PROJECT_DESCRIPTION.md) - Project architecture overview
 - [docs/OPTIMIZATIONS.md](docs/OPTIMIZATIONS.md) - Performance optimizations
 
-### API & Deployment
+### Development
+- [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) - Development setup and workflow
+- [docs/TESTING.md](docs/TESTING.md) - Testing guide
 - [docs/API.md](docs/API.md) - Backend API documentation
-- [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) - Deployment guide
-- [docs/UI_IMPLEMENTATION.md](docs/UI_IMPLEMENTATION.md) - Frontend details
+- [docs/MEMORY_REQUIREMENTS.md](docs/MEMORY_REQUIREMENTS.md) - Memory requirements
+
+### Deployment & UI
+- [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) - Deployment guide (Docker, production)
+- [docs/UI_IMPLEMENTATION.md](docs/UI_IMPLEMENTATION.md) - Web UI architecture
+- [CONTRIBUTING.md](CONTRIBUTING.md) - How to contribute
 
 ## 🎓 Key Improvements (2025 Refactoring)
 

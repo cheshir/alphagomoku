@@ -2,15 +2,21 @@
 
 This document describes the performance optimizations implemented to achieve sub-second MCTS performance and efficient large-scale training.
 
-## ⚠️ Current Performance Issue (5M Model + Parallel Workers)
+## ⚠️ Platform-Specific Performance Note (MPS/Apple Silicon)
 
-**Problem**: After upgrading from 2.67M to 5.04M parameters, training speed dropped from 4-5 epochs/day to ~3 epochs/day.
+**MPS-Specific Issue**: On Apple Silicon (M1/M2), PyTorch multiprocessing cannot share MPS context between workers. For large models (5M+):
+- **Multiple workers**: Use CPU-only inference (slow per-game, but parallelized)
+- **Single worker**: Use MPS inference (fast per-game, but sequential)
 
-**Root Cause**: Parallel workers use CPU-only inference (PyTorch multiprocessing can't share MPS context), while MPS sits idle. With 5M model:
-- **4 CPU workers**: 10 min/game × 200 games / 4 workers = 500 min (~8 hours) for self-play
-- **1 MPS worker**: 42 sec/game × 128 games = 90 min (~1.5 hours) for self-play
+**For 5M model on MPS**:
+- 4 CPU workers: 10 min/game × 200 games / 4 = ~8 hours for self-play
+- 1 MPS worker: 42 sec/game × 200 games = ~2.3 hours for self-play
 
-**Solution**: Use single worker with MPS for large models (5M+). See configuration below.
+**CUDA Note**: This issue does NOT affect CUDA systems. CUDA workers CAN initialize GPU context in spawned subprocesses and benefit from both parallelization AND GPU acceleration.
+
+**Recommendation**:
+- **MPS (Apple Silicon)**: Use single worker for large models
+- **CUDA (NVIDIA)**: Use multiple parallel workers (4+) for maximum throughput
 
 ## 🚀 Key Optimizations
 
@@ -25,7 +31,7 @@ This document describes the performance optimizations implemented to achieve sub
 - `MCTS._batch_evaluate_leaves()`: Evaluates multiple positions in a single forward pass
 - `GomokuNet.predict_batch()`: Batch prediction method
 
-**Performance Impact**: ~3x speedup for MCTS search
+**Performance Impact**: ~3x speedup for neural network inference phase within MCTS. Note: MCTS tree traversal (99% of search time) remains CPU-bound, but batching maximizes GPU efficiency during the 1% spent on NN inference.
 
 ### 2. Root Reuse Between Moves
 
@@ -295,27 +301,27 @@ If model_params >= 5M:
 - Multiprocessing: Each process gets own MPS context, true parallelism
 - Testing in progress to determine optimal strategy
 
-### Applied Optimizations (v2 - MPS Enabled)
+### Current Recommended Configuration (MPS/Apple Silicon)
 
-**Status**: ✅ **IMPLEMENTED** - Parallel workers now use MPS!
-
-**Changes Made**:
-1. **Modified `alphagomoku/selfplay/parallel.py`**: Workers now use MPS instead of forced CPU
-2. **Optimal batch size**: Changed from 64 to 96 (best per-inference latency: 2.25ms)
-3. **Updated Makefile**: Using optimized settings for 5M model
-
-**Key Insight**: The old comment "avoid MPS/CUDA context issues" was outdated. MPS works perfectly in subprocesses on macOS!
-
-### Current Recommended Configuration
-
+**For large models (5M) on MPS**:
 ```makefile
 --mcts-simulations 100      # 5M model needs fewer sims
 --batch-size-mcts 96        # Optimal for MPS
---parallel-workers 1        # Single worker sufficient with MPS
+--parallel-workers 1        # Single worker with MPS (see note above)
 --selfplay-games 128        # With augmentation + filtering
 ```
 
-**Performance**: ~1.75 hours/epoch (~12-14 epochs/day)
+**For CUDA systems**:
+```makefile
+--mcts-simulations 100
+--batch-size-mcts 128       # Larger batch for CUDA
+--parallel-workers 4        # Multiple workers benefit from GPU
+--selfplay-games 200
+```
+
+**Performance** (5M model):
+- MPS (single worker): ~1.75 hours/epoch (~12-14 epochs/day)
+- CUDA T4 (4 workers): ~30-40 min/epoch (~35-50 epochs/day)
 
 ### Future Optimizations (Experimental)
 

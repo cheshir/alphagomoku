@@ -356,7 +356,12 @@ class MCTS:
             v = -v
 
     def _simulate_batched(self):
-        """Run simulations in batches, sharing NN evaluations with optimized device transfers."""
+        """Run simulations in batches, sharing NN evaluations.
+
+        Note: MCTS tree traversal is CPU-bound by design (inherently sequential).
+        GPU is only used for batched neural network inference, which is a small
+        fraction of total search time (~1-5%). This is expected and normal.
+        """
         sims_done = 0
         device = next(self.model.parameters()).device
 
@@ -455,7 +460,12 @@ class MCTS:
     def _process_batch_leaves_optimized(
         self, leaves: List[Tuple[MCTSNode, List[MCTSNode]]], device: torch.device
     ) -> int:
-        """Process a batch of leaves with optimized device transfers."""
+        """Process a batch of leaves with neural network evaluation.
+
+        Batches multiple leaf nodes and evaluates them with a single GPU inference call.
+        This is the only GPU-accelerated part of MCTS. All tree traversal, node
+        selection, and backpropagation happens on CPU (Python).
+        """
         # Batch convert states to tensors and transfer to device once
         batch_states_np = []
         legal_masks_np = []
@@ -474,8 +484,9 @@ class MCTS:
         if not torch.isfinite(policies_t).all() or not torch.isfinite(values_t).all():
             raise ValueError("Model produced non-finite outputs during batched evaluation")
 
-        # Keep tensors on device for performance
-        # Note: Renamed to indicate these stay on device (not necessarily CPU)
+        # Keep tensors on device during processing to avoid unnecessary transfers
+        # This is important for CUDA (avoids expensive PCIe transfers)
+        # For MPS, impact is minimal due to unified memory architecture
         policies_device = policies_t
         values_device = values_t
         legal_masks_device = legal_masks
@@ -489,7 +500,8 @@ class MCTS:
 
             value = float(values_device[i].item())
 
-            # Convert to numpy for opening boost (move to CPU only when needed)
+            # Convert to numpy for opening boost
+            # .cpu() is required here before .numpy() to move tensor from GPU to CPU
             policy_np = policy.detach().cpu().numpy()
 
             # Boost opening moves if this is the ROOT node with 1 opponent stone

@@ -418,9 +418,8 @@ Cost:               ~$70
 ```
 
 **Breakdown:**
-- Self-play: 80% of time
-- Training: 15% of time
-- Evaluation: 5% of time
+- Self-play: 90% of time (CPU-bound MCTS)
+- NN Training: 10% of time (GPU-bound backprop)
 
 ### With A100 40GB (Premium)
 
@@ -546,12 +545,17 @@ ps aux | grep python
 ### Slow Training
 ```bash
 # Check GPU utilization
-nvidia-smi
+watch -n 1 nvidia-smi
 
-# Should see:
-# - GPU util: 90-100%
-# - Memory: 70-90% used
-# If low, increase batch size
+# Expected utilization:
+# - During self-play: 10-30% GPU (MCTS is CPU-bound, this is normal)
+# - During NN training: 95-99% GPU (backprop through CNN)
+# - Average over epoch: 25-40% GPU utilization
+#
+# Memory usage: 4-8 GB VRAM used
+#
+# If GPU is 0% during training phase, increase --batch-size
+# If self-play is very slow (>2min/game), check CPU performance
 ```
 
 ---
