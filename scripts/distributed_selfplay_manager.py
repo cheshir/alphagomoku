@@ -267,30 +267,19 @@ class DistributedSelfPlayManager:
         self.logger.propagate = False
 
     def setup(self):
-        """Initialize Redis and model."""
+        """Initialize Redis and model.
+
+        Strategy: Always check Redis first for latest model to ensure consistency
+        across multiple workers on different machines.
+        """
         os.makedirs(self.checkpoint_dir, exist_ok=True)
 
         # Connect to Redis via PositionQueue abstraction
         self.queue = PositionQueue(self.redis_url)
         self.logger.info(f"✓ Connected to Redis")
 
-        # Check for existing checkpoint
-        import glob
-        checkpoints = glob.glob(os.path.join(self.checkpoint_dir, 'model_v*.pt'))
-        if checkpoints:
-            latest_checkpoint = max(checkpoints, key=os.path.getctime)
-            try:
-                checkpoint = torch.load(latest_checkpoint, map_location='cpu', weights_only=False)
-                version = checkpoint.get('iteration', 0)
-                with self.version_lock:
-                    self.current_model_version.value = version
-                self.logger.info(f"✓ Found checkpoint: {latest_checkpoint} (v{version})")
-                return
-            except Exception as e:
-                self.logger.warning(f"Failed to load checkpoint: {e}")
-
-        # Check Redis
-        self.logger.info("Checking Redis for trained model...")
+        # PRIORITY 1: Check Redis for latest model (ensures consistency across workers)
+        self.logger.info("Checking Redis for latest model...")
         model_data = self.queue.pull_model(timeout=0)
 
         if model_data:
@@ -304,12 +293,28 @@ class DistributedSelfPlayManager:
                 }, checkpoint_path)
                 with self.version_lock:
                     self.current_model_version.value = iteration
-                self.logger.info(f"✓ Downloaded model from Redis (v{iteration})")
+                self.logger.info(f"✓ Loaded model from Redis (v{iteration})")
                 return
             except Exception as e:
                 self.logger.warning(f"Failed to save model from Redis: {e}")
 
-        # Create random model
+        # PRIORITY 2: Fallback to local checkpoint if Redis unavailable
+        import glob
+        checkpoints = glob.glob(os.path.join(self.checkpoint_dir, 'model_v*.pt'))
+        if checkpoints:
+            latest_checkpoint = max(checkpoints, key=os.path.getctime)
+            try:
+                checkpoint = torch.load(latest_checkpoint, map_location='cpu', weights_only=False)
+                version = checkpoint.get('iteration', 0)
+                with self.version_lock:
+                    self.current_model_version.value = version
+                self.logger.info(f"✓ Loaded local checkpoint (v{version}) - Redis was empty")
+                self.logger.warning("⚠️  Using local checkpoint - may not be latest across workers!")
+                return
+            except Exception as e:
+                self.logger.warning(f"Failed to load local checkpoint: {e}")
+
+        # PRIORITY 3: Create random model (cold start)
         self.logger.info("No trained model found, creating random initialization...")
         model = GomokuNet.from_preset(self.model_preset, board_size=15, device='cpu')
         checkpoint_path = os.path.join(self.checkpoint_dir, 'model_v0.pt')
@@ -352,8 +357,14 @@ class DistributedSelfPlayManager:
             self.accumulated_positions.value = 0  # Reset counter
 
     def model_updater_thread(self):
-        """Model updater thread (downloads models from Redis)."""
+        """Model updater thread (downloads models from Redis).
+
+        Uses efficient timestamp-based polling:
+        1. Periodically check lightweight timestamp (few bytes)
+        2. Only download full model (~50MB) if timestamp changed
+        """
         updates_since_check = 0
+        last_timestamp = None  # Track last seen timestamp
 
         while self.running.value:
             self.check_model_event.wait(timeout=10)
@@ -366,15 +377,28 @@ class DistributedSelfPlayManager:
             updates_since_check = 0
 
             try:
-                model_data = self.queue.pull_model(timeout=1)
+                # STEP 1: Check timestamp (lightweight, ~10 bytes)
+                current_timestamp = self.queue.get_model_timestamp()
+                if not current_timestamp:
+                    continue  # No model in Redis yet
+
+                # STEP 2: Compare timestamps
+                if current_timestamp == last_timestamp:
+                    continue  # Model hasn't changed, skip download
+
+                # STEP 3: Download model only if timestamp changed
+                model_data = self.queue.pull_model(timeout=0)
                 if not model_data:
                     continue
 
                 iteration = model_data['metadata'].get('iteration', 0)
 
                 if iteration <= self.current_model_version.value:
+                    # Timestamp changed but version didn't (shouldn't happen)
+                    last_timestamp = current_timestamp
                     continue
 
+                # Save model checkpoint
                 checkpoint_path = os.path.join(self.checkpoint_dir, f'model_v{iteration}.pt')
                 torch.save({
                     'model_state': model_data['model_state'],
@@ -385,7 +409,10 @@ class DistributedSelfPlayManager:
                 with self.version_lock:
                     self.current_model_version.value = iteration
 
-                self.logger.info(f"✓ Updated to model v{iteration}")
+                # Remember this timestamp
+                last_timestamp = current_timestamp
+
+                self.logger.info(f"✓ Updated to model v{iteration} (timestamp: {current_timestamp})")
 
             except Exception as e:
                 self.logger.error(f"Model update failed: {e}")

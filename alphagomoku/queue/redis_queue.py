@@ -16,7 +16,8 @@ class RedisQueue:
 
     Queue structure:
         - games:queue: List of serialized game data
-        - models:queue: List of serialized models (with metadata)
+        - latest_model: Current model state (single key, not a queue)
+        - latest_model_timestamp: ISO timestamp of last model update (for polling)
         - stats:games_pushed: Counter for total games pushed
         - stats:games_pulled: Counter for total games pulled
         - stats:models_pushed: Counter for total models pushed
@@ -26,7 +27,8 @@ class RedisQueue:
     """
 
     GAMES_QUEUE = "games:queue"
-    MODELS_QUEUE = "models:queue"
+    LATEST_MODEL = "latest_model"
+    LATEST_MODEL_TIMESTAMP = "latest_model_timestamp"
     STATS_GAMES_PUSHED = "stats:games_pushed"
     STATS_GAMES_PULLED = "stats:games_pulled"
     STATS_MODELS_PUSHED = "stats:models_pushed"
@@ -120,30 +122,58 @@ class RedisQueue:
         return games
 
     def push_model(self, model_state: dict, metadata: Optional[dict] = None) -> None:
-        """Push a trained model to the queue.
+        """Push a trained model to Redis (replaces previous model).
+
+        Uses two keys:
+        - latest_model: The actual model data (~50MB)
+        - latest_model_timestamp: ISO timestamp string for efficient polling
 
         Args:
             model_state: Model state dict (from model.state_dict())
-            metadata: Optional metadata (epoch, metrics, etc.)
+            metadata: Optional metadata (iteration, metrics, etc.)
         """
+        from datetime import datetime
+
+        timestamp = datetime.utcnow().isoformat()
+
         data = {
             'model_state': model_state,
             'metadata': metadata or {},
-            'timestamp': time.time(),
+            'timestamp': timestamp,
         }
 
-        # Serialize
+        # Serialize model data
         serialized = pickle.dumps(data)
 
-        # Push to queue (keep only latest 5 models)
-        self.redis.lpush(self.MODELS_QUEUE, serialized)
-        self.redis.ltrim(self.MODELS_QUEUE, 0, 4)  # Keep only 5 latest
+        # Atomic update: set both keys together
+        pipeline = self.redis.pipeline()
+        pipeline.set(self.LATEST_MODEL, serialized)
+        pipeline.set(self.LATEST_MODEL_TIMESTAMP, timestamp)
+        pipeline.incr(self.STATS_MODELS_PUSHED)
+        pipeline.execute()
 
-        # Update stats
-        self.redis.incr(self.STATS_MODELS_PUSHED)
+        # Note: Old model is immediately replaced (memory efficient)
+
+    def get_model_timestamp(self) -> Optional[str]:
+        """Get the timestamp of the latest model (lightweight check).
+
+        This is used by workers to efficiently poll for model updates without
+        downloading the full model (~50MB).
+
+        Returns:
+            ISO format timestamp string or None if no model exists
+        """
+        timestamp = self.redis.get(self.LATEST_MODEL_TIMESTAMP)
+        if timestamp is None:
+            return None
+        return timestamp.decode('utf-8') if isinstance(timestamp, bytes) else timestamp
 
     def pull_model(self, timeout: int = 0) -> Optional[dict]:
-        """Pull latest model from the queue.
+        """Pull latest model from Redis.
+
+        Workers should:
+        1. Call get_model_timestamp() periodically (cheap)
+        2. Only call pull_model() if timestamp changed (expensive)
 
         Args:
             timeout: Seconds to wait if no model available (0 = don't wait)
@@ -151,20 +181,15 @@ class RedisQueue:
         Returns:
             Dictionary with 'model_state', 'metadata', 'timestamp' or None
         """
-        # Get latest model (but don't remove it)
-        serialized = self.redis.lindex(self.MODELS_QUEUE, 0)
+        # Get latest model directly from key
+        serialized = self.redis.get(self.LATEST_MODEL)
 
         if serialized is None:
             if timeout > 0:
-                # Wait for new model
-                result = self.redis.blpop(self.MODELS_QUEUE, timeout=timeout)
-                if result is None:
-                    return None
-                _, serialized = result
-                # Put it back (we just wanted to wait for it)
-                self.redis.lpush(self.MODELS_QUEUE, serialized)
-            else:
-                return None
+                # TODO: Implement blocking wait using pub/sub for efficiency
+                # For now, just return None (workers will poll)
+                pass
+            return None
 
         # Deserialize
         data = pickle.loads(serialized)
@@ -184,9 +209,12 @@ class RedisQueue:
         Returns:
             Dictionary with queue statistics
         """
+        # Check if model exists (1 or 0, not a list length)
+        model_exists = 1 if self.redis.exists(self.LATEST_MODEL) else 0
+
         return {
             'queue_size': self.get_queue_size(),
-            'models_available': self.redis.llen(self.MODELS_QUEUE),
+            'models_available': model_exists,  # Now 0 or 1, not list length
             'games_pushed': int(self.redis.get(self.STATS_GAMES_PUSHED) or 0),
             'games_pulled': int(self.redis.get(self.STATS_GAMES_PULLED) or 0),
             'models_pushed': int(self.redis.get(self.STATS_MODELS_PUSHED) or 0),

@@ -47,8 +47,23 @@ class PositionQueue:
         """
         return self._redis_queue.pull_games(batch_size=max_batches, timeout=timeout)
 
+    def get_model_timestamp(self) -> Optional[str]:
+        """Get the timestamp of the latest model (lightweight check).
+
+        This is used by workers to efficiently poll for model updates without
+        downloading the full model (~50MB).
+
+        Returns:
+            ISO format timestamp string or None if no model exists
+        """
+        return self._redis_queue.get_model_timestamp()
+
     def push_model(self, model_state: dict, metadata: Optional[dict] = None) -> None:
-        """Push a trained model to the queue.
+        """Push a trained model to Redis (replaces previous model).
+
+        Uses efficient two-key strategy:
+        - latest_model: The actual model data (~50MB)
+        - latest_model_timestamp: ISO timestamp for polling
 
         Args:
             model_state: Model state dict (from model.state_dict())
@@ -57,7 +72,11 @@ class PositionQueue:
         self._redis_queue.push_model(model_state, metadata)
 
     def pull_model(self, timeout: int = 0) -> Optional[dict]:
-        """Pull latest model from the queue.
+        """Pull latest model from Redis.
+
+        Efficient pattern:
+        1. Call get_model_timestamp() periodically (cheap)
+        2. Only call pull_model() if timestamp changed (expensive)
 
         Args:
             timeout: Seconds to wait if no model available (0 = don't wait)
