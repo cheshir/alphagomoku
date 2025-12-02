@@ -8,7 +8,7 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
-from tqdm import tqdm
+from tqdm.auto import tqdm
 
 # MPS optimization settings
 os.environ['PYTORCH_ENABLE_MPS_FALLBACK'] = '0'  # Fail if ops fallback to CPU
@@ -495,7 +495,7 @@ def main():
     
     # Training loop
     epoch_pbar = tqdm(
-        range(start_epoch, args.epochs), desc="Epochs", unit="epoch", position=0
+        range(start_epoch, args.epochs), desc="Epochs", unit="epoch"
     )
     for epoch in epoch_pbar:
         epoch_start = time.time()

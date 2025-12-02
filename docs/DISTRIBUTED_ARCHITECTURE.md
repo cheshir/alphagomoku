@@ -197,11 +197,12 @@ redis.setex(f"worker:{worker_id}", 60, timestamp)
 
 **Key Configuration**:
 ```bash
---model-preset medium              # 5.04M parameters
---batch-size 1024                  # Training batch size
---device cuda                      # Use CUDA GPU
---min-games-for-training 50        # Wait for 50+ games before training
---publish-frequency 5              # Publish model every 5 iterations
+--model-preset medium                            # 5.04M parameters
+--batch-size 1024                                # Training batch size
+--device cuda                                    # Use CUDA GPU
+--min-position-batches-for-training 50           # Wait for 50+ position batches (~50K positions)
+--position-batches-per-training-pull 50          # Pull 50 position batches (~50K positions) per iteration
+--publish-frequency 5                            # Publish model every 5 iterations
 ```
 
 **Performance** (Colab T4):
@@ -438,11 +439,11 @@ redis-cli -u $REDIS_URL get latest_model | wc -c
 **4. GPU utilization low in distributed mode**
 ```bash
 # Should be 80-95% during training batches
-# If low, increase batch size or min-games-for-training
+# If low, increase batch size or min-position-batches-for-training
 
 # Edit CONFIG in train_universal.ipynb:
 batch_size = 2048  # increase
-min_batches_for_training = 100  # increase
+min_position_batches_for_training = 100  # increase
 ```
 
 ---

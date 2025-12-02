@@ -229,7 +229,7 @@ alphagomoku/
 
 ## Full Documentation
 
-For complete details, see [docs/TRAINING.md#distributed-training](docs/TRAINING.md#distributed-training)
+For complete details, see [docs/TRAINING.md#distributed-training](TRAINING.md#distributed-training)
 
 ## Support
 

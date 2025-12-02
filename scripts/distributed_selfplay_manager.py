@@ -125,7 +125,7 @@ def worker_process(
                     worker_stats_dict[worker_name] = stats
 
                 try:
-                    checkpoint = torch.load(checkpoint_path, map_location=device)
+                    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
                     worker_model.load_state_dict(checkpoint['model_state'])
                     worker_model_version = current_version
                     model_loaded = True
@@ -280,7 +280,7 @@ class DistributedSelfPlayManager:
         if checkpoints:
             latest_checkpoint = max(checkpoints, key=os.path.getctime)
             try:
-                checkpoint = torch.load(latest_checkpoint, map_location='cpu')
+                checkpoint = torch.load(latest_checkpoint, map_location='cpu', weights_only=False)
                 version = checkpoint.get('iteration', 0)
                 with self.version_lock:
                     self.current_model_version.value = version

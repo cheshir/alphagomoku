@@ -65,10 +65,10 @@ def main():
                         help='Publish model every N training batches')
     parser.add_argument('--checkpoint-dir', type=str, default='./checkpoints_distributed',
                         help='Directory to save checkpoints')
-    parser.add_argument('--min-games-for-training', type=int, default=50,
-                        help='Minimum games in queue before training')
-    parser.add_argument('--games-per-training-batch', type=int, default=50,
-                        help='Number of game batches to pull per training iteration')
+    parser.add_argument('--min-position-batches-for-training', type=int, default=50,
+                        help='Minimum position batches in queue before training (each batch ~1000 positions)')
+    parser.add_argument('--position-batches-per-training-pull', type=int, default=50,
+                        help='Position batches to pull per training iteration (each batch ~1000 positions)')
 
     args = parser.parse_args()
 
@@ -91,8 +91,8 @@ def main():
         args.lr,
         args.min_lr,
         args.publish_frequency,
-        args.min_batches_for_training,
-        args.games_per_training_batch
+        args.min_position_batches_for_training,
+        args.position_batches_per_training_pull
     ))
 
     # Print validation errors and exit if any
@@ -156,18 +156,18 @@ def main():
             stats = queue.get_stats()
             queue_size = stats['queue_size']
 
-            if queue_size < args.min_batches_for_training:
+            if queue_size < args.min_position_batches_for_training:
                 logger.info(
-                    f"Queue has {queue_size} batches "
-                    f"(need {args.min_batches_for_training}). Waiting..."
+                    f"Queue has {queue_size} position batches "
+                    f"(need {args.min_position_batches_for_training}). Waiting..."
                 )
                 time.sleep(10)
                 continue
 
-            # Pull games from queue
-            logger.info(f"Pulling {args.games_per_training_batch} game batches from queue...")
+            # Pull position batches from queue
+            logger.info(f"Pulling {args.position_batches_per_training_pull} position batches from queue...")
             pull_start = time.time()
-            games = queue.pull_games(batch_size=args.games_per_training_batch, timeout=30)
+            games = queue.pull_games(batch_size=args.position_batches_per_training_pull, timeout=30)
             pull_time = time.time() - pull_start
 
             if not games:

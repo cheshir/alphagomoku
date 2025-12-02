@@ -463,7 +463,7 @@ Expected results:
 
 ## Support
 
-- Full docs: [docs/TRAINING.md](docs/TRAINING.md)
+- Full docs: [docs/TRAINING.md](TRAINING.md)
 - Quick start: [DISTRIBUTED_TRAINING.md](DISTRIBUTED_TRAINING.md)
 - Help: `make distributed-help`
 - Monitor: `make distributed-monitor`

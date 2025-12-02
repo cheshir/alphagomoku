@@ -3,7 +3,7 @@
 import multiprocessing as mp
 from typing import List, Optional
 
-from tqdm import tqdm
+from tqdm.auto import tqdm
 
 import torch
 

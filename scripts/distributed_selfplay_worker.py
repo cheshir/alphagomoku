@@ -130,7 +130,7 @@ def main():
     if os.path.exists(local_checkpoint):
         try:
             logger.info(f"Loading model from local checkpoint: {local_checkpoint}")
-            checkpoint = torch.load(local_checkpoint, map_location=args.device)
+            checkpoint = torch.load(local_checkpoint, map_location=args.device, weights_only=False)
             model.load_state_dict(checkpoint['model_state'])
             iteration = checkpoint.get('iteration', 'unknown')
             logger.info(f"✓ Loaded model from local checkpoint (iteration: {iteration})")

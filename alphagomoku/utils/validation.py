@@ -94,8 +94,8 @@ def validate_training_config(
     lr: float,
     min_lr: float,
     publish_frequency: int,
-    min_batches_for_training: int,
-    games_per_training_batch: int
+    min_position_batches_for_training: int,
+    position_batches_per_training_pull: int
 ) -> List[str]:
     """Validate training worker configuration.
 
@@ -104,8 +104,8 @@ def validate_training_config(
         lr: Learning rate
         min_lr: Minimum learning rate
         publish_frequency: How often to publish model
-        min_batches_for_training: Minimum games before training
-        games_per_training_batch: Games to pull per training iteration
+        min_position_batches_for_training: Minimum position batches before training
+        position_batches_per_training_pull: Position batches to pull per training iteration
 
     Returns:
         List of validation error messages (empty if valid)
@@ -143,20 +143,20 @@ def validate_training_config(
             f"   Recommended: 5 (publish model every 5 training iterations)"
         )
 
-    # Validate min games for training
-    if min_batches_for_training < 1 or min_batches_for_training > 1000:
+    # Validate min position batches for training
+    if min_position_batches_for_training < 1 or min_position_batches_for_training > 1000:
         errors.append(
-            f"❌ Invalid min games for training: {min_batches_for_training}\n"
+            f"❌ Invalid min position batches for training: {min_position_batches_for_training}\n"
             f"   Must be between 1 and 1000\n"
-            f"   Recommended: 50 (wait for 50+ games before training)"
+            f"   Recommended: 50 (wait for 50+ position batches, ~50,000 positions total)"
         )
 
-    # Validate games per training batch
-    if games_per_training_batch < 1 or games_per_training_batch > 500:
+    # Validate position batches per training pull
+    if position_batches_per_training_pull < 1 or position_batches_per_training_pull > 500:
         errors.append(
-            f"❌ Invalid games per training batch: {games_per_training_batch}\n"
+            f"❌ Invalid position batches per training pull: {position_batches_per_training_pull}\n"
             f"   Must be between 1 and 500\n"
-            f"   Recommended: 50"
+            f"   Recommended: 50 (pull 50 position batches, ~50,000 positions per training iteration)"
         )
 
     return errors

@@ -5,7 +5,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.tensorboard import SummaryWriter
-from tqdm import tqdm
+from tqdm.auto import tqdm
 
 from ..model.network import GomokuNet
 from ..selfplay.selfplay import SelfPlayData
@@ -194,7 +194,6 @@ class Trainer:
             desc="Train steps",
             leave=False,
             unit="step",
-            position=2,
         )
         for i in step_pbar:
             batch = data_buffer.sample_batch(batch_size)

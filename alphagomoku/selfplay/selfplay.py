@@ -3,7 +3,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import torch
-from tqdm import tqdm
+from tqdm.auto import tqdm
 
 from ..env.gomoku_env import GomokuEnv
 from ..mcts.adaptive import AdaptiveSimulator
