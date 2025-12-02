@@ -53,8 +53,8 @@ class RedisQueue:
             self.redis = redis.from_url(
                 redis_url,
                 decode_responses=False,  # We need binary for pickle
-                socket_connect_timeout=5,
-                socket_timeout=5,
+                socket_connect_timeout=10,
+                socket_timeout=30,  # 30s timeout for large model uploads (~50MB)
             )
             # Test connection
             self.redis.ping()

@@ -55,7 +55,7 @@ def main():
     parser.add_argument('--mcts-simulations', type=int, default=50,
                         help='MCTS simulations per move')
     parser.add_argument('--device', type=str, choices=['cpu', 'mps', 'cuda'],
-                        default='cpu', help='Device to use')
+                        default='mps', help='Device to use for inference (default: mps for Mac acceleration)')
     parser.add_argument('--worker-id', type=str, required=True,
                         help='Unique worker identifier')
     parser.add_argument('--games-per-batch', type=int, default=10,
