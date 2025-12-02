@@ -229,6 +229,7 @@ class DistributedSelfPlayManager:
 
         # Shared state (accessible across processes)
         self.current_model_version = self.manager.Value('i', 0)
+        self.current_model_timestamp = self.manager.Value('c', b'')  # Redis timestamp string
         self.version_lock = self.manager.Lock()
         self.game_queue = self.manager.Queue()
         self.worker_stats_dict = self.manager.dict()
@@ -285,15 +286,19 @@ class DistributedSelfPlayManager:
         if model_data:
             try:
                 iteration = model_data['metadata'].get('iteration', 0)
+                timestamp = model_data.get('timestamp', '')
                 checkpoint_path = os.path.join(self.checkpoint_dir, f'model_v{iteration}.pt')
                 torch.save({
                     'model_state': model_data['model_state'],
                     'iteration': iteration,
-                    'metadata': model_data['metadata']
+                    'metadata': model_data['metadata'],
+                    'timestamp': timestamp
                 }, checkpoint_path)
                 with self.version_lock:
                     self.current_model_version.value = iteration
-                self.logger.info(f"✓ Loaded model from Redis (v{iteration})")
+                    if timestamp:
+                        self.current_model_timestamp.value = timestamp.encode('utf-8')
+                self.logger.info(f"✓ Loaded model from Redis (v{iteration}, {timestamp})")
                 return
             except Exception as e:
                 self.logger.warning(f"Failed to save model from Redis: {e}")
@@ -306,9 +311,12 @@ class DistributedSelfPlayManager:
             try:
                 checkpoint = torch.load(latest_checkpoint, map_location='cpu', weights_only=False)
                 version = checkpoint.get('iteration', 0)
+                timestamp = checkpoint.get('timestamp', '')
                 with self.version_lock:
                     self.current_model_version.value = version
-                self.logger.info(f"✓ Loaded local checkpoint (v{version}) - Redis was empty")
+                    if timestamp:
+                        self.current_model_timestamp.value = timestamp.encode('utf-8')
+                self.logger.info(f"✓ Loaded local checkpoint (v{version}, {timestamp}) - Redis was empty")
                 self.logger.warning("⚠️  Using local checkpoint - may not be latest across workers!")
                 return
             except Exception as e:
@@ -403,11 +411,13 @@ class DistributedSelfPlayManager:
                 torch.save({
                     'model_state': model_data['model_state'],
                     'iteration': iteration,
-                    'metadata': model_data['metadata']
+                    'metadata': model_data['metadata'],
+                    'timestamp': current_timestamp
                 }, checkpoint_path)
 
                 with self.version_lock:
                     self.current_model_version.value = iteration
+                    self.current_model_timestamp.value = current_timestamp.encode('utf-8')
 
                 # Remember this timestamp
                 last_timestamp = current_timestamp
@@ -456,7 +466,25 @@ class DistributedSelfPlayManager:
         lines.append("=" * 80)
 
         runtime_str, _ = self._get_runtime_string()
-        lines.append(f"\n⏱  Runtime: {runtime_str}  |  Model: v{self.current_model_version.value}")
+
+        # Get model version display
+        model_timestamp = self.current_model_timestamp.value
+        if model_timestamp:
+            try:
+                timestamp_str = model_timestamp.decode('utf-8')
+                # Format: "2025-12-02T22:30:45.123456" -> "2025-12-02 22:30:45"
+                if 'T' in timestamp_str:
+                    date_part, time_part = timestamp_str.split('T')
+                    time_clean = time_part.split('.')[0]  # Remove microseconds
+                    model_display = f"{date_part} {time_clean}"
+                else:
+                    model_display = timestamp_str
+            except:
+                model_display = f"v{self.current_model_version.value}"
+        else:
+            model_display = f"v{self.current_model_version.value}"
+
+        lines.append(f"\n⏱  Runtime: {runtime_str}  |  Model: {model_display}")
         return lines
 
     def _build_local_queue_stats(self) -> tuple:
