@@ -45,6 +45,51 @@ def setup_logging(worker_id: str = "training") -> logging.Logger:
     return logging.getLogger(__name__)
 
 
+def _log_training_metrics(
+    checkpoint_dir: str,
+    iteration: int,
+    metrics: dict,
+    train_time: float,
+    buffer_size: int,
+    positions_pulled: int
+):
+    """Log training metrics to CSV file (persistent across restarts)."""
+    from alphagomoku.utils import append_metrics_to_csv
+
+    csv_path = os.path.join(checkpoint_dir, 'training_metrics.csv')
+
+    headers = [
+        'iteration', 'total_loss', 'policy_loss', 'value_loss',
+        'policy_accuracy', 'value_mae', 'lr', 'train_time',
+        'buffer_size', 'positions_pulled'
+    ]
+
+    values = {
+        'iteration': iteration,
+        'total_loss': metrics.get('total_loss', ''),
+        'policy_loss': metrics.get('policy_loss', ''),
+        'value_loss': metrics.get('value_loss', ''),
+        'policy_accuracy': metrics.get('policy_accuracy', ''),
+        'value_mae': metrics.get('value_mae', ''),
+        'lr': metrics.get('lr', ''),
+        'train_time': train_time,
+        'buffer_size': buffer_size,
+        'positions_pulled': positions_pulled,
+    }
+
+    formatters = {
+        'total_loss': '.6f',
+        'policy_loss': '.6f',
+        'value_loss': '.6f',
+        'policy_accuracy': '.6f',
+        'value_mae': '.6f',
+        'lr': '.8f',
+        'train_time': '.3f',
+    }
+
+    append_metrics_to_csv(csv_path, headers, values, formatters)
+
+
 def main():
     parser = argparse.ArgumentParser(description='Distributed training worker')
     parser.add_argument('--redis-url', type=str, required=True,
@@ -65,6 +110,10 @@ def main():
                         help='Publish model every N training batches')
     parser.add_argument('--checkpoint-dir', type=str, default='./checkpoints_distributed',
                         help='Directory to save checkpoints')
+    parser.add_argument('--data-dir', type=str, default='./data_distributed',
+                        help='Directory for replay buffer (persistent LMDB storage)')
+    parser.add_argument('--replay-buffer-size', type=int, default=500000,
+                        help='Maximum positions in replay buffer')
     parser.add_argument('--min-position-batches-for-training', type=int, default=50,
                         help='Minimum position batches in queue before training (each batch ~1000 positions)')
     parser.add_argument('--position-batches-per-training-pull', type=int, default=50,
@@ -111,8 +160,9 @@ def main():
     logger.info(f"Checkpoint directory: {args.checkpoint_dir}")
     logger.info("✓ Configuration validated successfully")
 
-    # Create checkpoint directory
+    # Create directories
     os.makedirs(args.checkpoint_dir, exist_ok=True)
+    os.makedirs(args.data_dir, exist_ok=True)
 
     # Connect to Redis
     try:
@@ -139,13 +189,37 @@ def main():
     )
     logger.info(f"Trainer initialized on {args.device}")
 
-    logger.info("Starting training loop...")
-    logger.info("Press Ctrl+C to stop")
-    logger.info("=" * 60)
-
+    # Try to resume from latest checkpoint
     training_iteration = 0
     total_positions_trained = 0
     start_time = time.time()
+
+    import glob
+    checkpoints = sorted(glob.glob(os.path.join(args.checkpoint_dir, 'model_iteration_*.pt')))
+    if checkpoints:
+        latest_checkpoint = checkpoints[-1]
+        try:
+            logger.info(f"Found checkpoint: {latest_checkpoint}")
+            checkpoint = trainer.load_checkpoint(latest_checkpoint)
+            training_iteration = checkpoint.get('iteration', 0)
+            total_positions_trained = checkpoint.get('total_positions', 0)
+            logger.info(f"✓ Resumed from iteration {training_iteration}")
+            logger.info(f"✓ Total positions trained so far: {total_positions_trained}")
+        except Exception as e:
+            logger.warning(f"Failed to load checkpoint: {e}")
+            logger.info("Starting from scratch")
+    else:
+        logger.info("No checkpoint found, starting from scratch")
+
+    # Create persistent replay buffer
+    from alphagomoku.train.data_buffer import DataBuffer
+    buffer = DataBuffer(args.data_dir, max_size=args.replay_buffer_size)
+    logger.info(f"✓ Replay buffer initialized: {args.data_dir} (max {args.replay_buffer_size:,} positions)")
+    logger.info(f"  Current buffer size: {len(buffer):,} positions")
+
+    logger.info("Starting training loop...")
+    logger.info("Press Ctrl+C to stop")
+    logger.info("=" * 60)
 
     try:
         while True:
@@ -179,26 +253,20 @@ def main():
                 f"({len(games)/pull_time:.1f} positions/s)"
             )
 
-            # Convert games to format expected by trainer
-            # Games are already in SelfPlayData format from selfplay workers
-            from alphagomoku.train.data_buffer import DataBuffer
+            # Add positions to persistent replay buffer
+            buffer.add_data(games)
+            logger.info(f"Replay buffer size: {len(buffer):,} / {args.replay_buffer_size:,} positions")
 
-            # Create temporary in-memory buffer
-            import tempfile
-            with tempfile.TemporaryDirectory() as tmpdir:
-                buffer = DataBuffer(tmpdir, max_size=len(games) * 2)
-                buffer.add_data(games)
-
-                # Train on the data
-                logger.info(f"Training on {len(games)} positions (batch size: {args.batch_size})...")
-                train_start = time.time()
-                metrics = trainer.train_epoch(buffer, args.batch_size)
-                train_time = time.time() - train_start
+            # Train on the replay buffer
+            logger.info(f"Training on replay buffer (batch size: {args.batch_size})...")
+            train_start = time.time()
+            metrics = trainer.train_epoch(buffer, args.batch_size)
+            train_time = time.time() - train_start
 
             training_iteration += 1
             total_positions_trained += len(games)
 
-            # Log metrics
+            # Log metrics to console
             if metrics:
                 logger.info(
                     f"Iteration {training_iteration} complete in {train_time:.1f}s: "
@@ -206,6 +274,16 @@ def main():
                     f"policy_acc={metrics['policy_accuracy']:.3f}, "
                     f"value_mae={metrics['value_mae']:.3f}, "
                     f"lr={metrics['lr']:.1e}"
+                )
+
+                # Log metrics to CSV (persistent across restarts)
+                _log_training_metrics(
+                    args.checkpoint_dir,
+                    training_iteration,
+                    metrics,
+                    train_time,
+                    len(buffer),
+                    len(games)
                 )
             else:
                 logger.warning(f"Training iteration {training_iteration} produced no metrics")
@@ -235,12 +313,21 @@ def main():
                     queue.push_model(model_state, metadata)
                     logger.info(f"Model published (iteration {training_iteration})")
 
-                    # Save checkpoint locally
+                    # Save checkpoint locally with full training state
                     checkpoint_path = os.path.join(
                         args.checkpoint_dir,
                         f'model_iteration_{training_iteration}.pt'
                     )
-                    trainer.save_checkpoint(checkpoint_path, training_iteration, metrics)
+                    checkpoint = {
+                        "model_state_dict": model.state_dict(),
+                        "optimizer_state_dict": trainer.optimizer.state_dict(),
+                        "scheduler_state_dict": trainer.scheduler.state_dict(),
+                        "iteration": training_iteration,
+                        "total_positions": total_positions_trained,
+                        "step": trainer.step,
+                        "metrics": metrics if metrics else {},
+                    }
+                    torch.save(checkpoint, checkpoint_path)
                     logger.info(f"Checkpoint saved: {checkpoint_path}")
 
                 except Exception as e:
@@ -263,10 +350,19 @@ def main():
         logger.info(f"Total positions trained: {total_positions_trained}")
         logger.info(f"Runtime: {(time.time() - start_time) / 3600:.2f} hours")
 
-        # Save final model
+        # Save final model with full state
         logger.info("Saving final model...")
         checkpoint_path = os.path.join(args.checkpoint_dir, 'model_final.pt')
-        trainer.save_checkpoint(checkpoint_path, training_iteration, metrics)
+        checkpoint = {
+            "model_state_dict": model.state_dict(),
+            "optimizer_state_dict": trainer.optimizer.state_dict(),
+            "scheduler_state_dict": trainer.scheduler.state_dict(),
+            "iteration": training_iteration,
+            "total_positions": total_positions_trained,
+            "step": trainer.step,
+            "metrics": metrics if 'metrics' in locals() else {},
+        }
+        torch.save(checkpoint, checkpoint_path)
         logger.info(f"Final checkpoint saved: {checkpoint_path}")
 
         logger.info("=" * 60)

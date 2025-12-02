@@ -160,39 +160,28 @@ Learning Rate: {args.lr}"""
 
 def _append_metrics_csv(csv_path: str, epoch: int, history: dict, extra: dict):
     """Append training metrics to a CSV file, creating header on first write."""
-    import csv
-    import os
-
-    os.makedirs(os.path.dirname(csv_path), exist_ok=True)
+    from alphagomoku.utils import append_metrics_to_csv
 
     headers = [
         'epoch', 'loss', 'policy_acc', 'value_mae', 'lr',
         'epoch_time', 'selfplay_time', 'train_time', 'buffer_size', 'positions'
     ]
-    # Current values (may be None if metrics not computed)
-    loss = history['loss'][-1] if history['loss'] else ''
-    acc = history['policy_acc'][-1] if history['policy_acc'] else ''
-    mae = history['value_mae'][-1] if history['value_mae'] else ''
-    lr = extra.get('lr', '')
-    row = [
-        epoch,
-        loss,
-        acc,
-        mae,
-        lr,
-        extra.get('epoch_time', ''),
-        extra.get('selfplay_time', ''),
-        extra.get('train_time', ''),
-        extra.get('buffer_size', ''),
-        extra.get('positions', ''),
-    ]
 
-    file_exists = os.path.exists(csv_path)
-    with open(csv_path, 'a', newline='') as f:
-        writer = csv.writer(f)
-        if not file_exists:
-            writer.writerow(headers)
-        writer.writerow(row)
+    # Build values dict
+    values = {
+        'epoch': epoch,
+        'loss': history['loss'][-1] if history['loss'] else '',
+        'policy_acc': history['policy_acc'][-1] if history['policy_acc'] else '',
+        'value_mae': history['value_mae'][-1] if history['value_mae'] else '',
+        'lr': extra.get('lr', ''),
+        'epoch_time': extra.get('epoch_time', ''),
+        'selfplay_time': extra.get('selfplay_time', ''),
+        'train_time': extra.get('train_time', ''),
+        'buffer_size': extra.get('buffer_size', ''),
+        'positions': extra.get('positions', ''),
+    }
+
+    append_metrics_to_csv(csv_path, headers, values)
 
 
 def _get_hardware_config(device: str) -> dict:

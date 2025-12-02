@@ -66,6 +66,10 @@ def main():
                         help='MCTS batch size for neural network evaluation')
     parser.add_argument('--checkpoint-dir', type=str, default='./checkpoints',
                         help='Directory to save/load model checkpoints locally')
+    parser.add_argument('--enable-cache', action='store_true',
+                        help='Enable local caching of generated positions for testing/replay')
+    parser.add_argument('--cache-dir', type=str, default='./position_cache',
+                        help='Directory to cache positions locally (only used if --enable-cache)')
 
     args = parser.parse_args()
 
@@ -104,10 +108,22 @@ def main():
     logger.info(f"Games per batch: {args.games_per_batch}")
     logger.info(f"Model update frequency: every {args.model_update_frequency} batches")
     logger.info(f"Checkpoint directory: {args.checkpoint_dir}")
+    if args.enable_cache:
+        logger.info(f"Position caching: ENABLED")
+        logger.info(f"Cache directory: {args.cache_dir}")
+    else:
+        logger.info(f"Position caching: DISABLED")
     logger.info("✓ Configuration validated successfully")
 
     # Create checkpoint directory
     os.makedirs(args.checkpoint_dir, exist_ok=True)
+
+    # Setup position cache if enabled
+    position_cache = None
+    if args.enable_cache:
+        from alphagomoku.utils import PositionCache
+        position_cache = PositionCache(args.cache_dir)
+        logger.info(f"✓ Position cache initialized: {args.cache_dir}")
 
     # Connect to Redis
     try:
@@ -192,6 +208,18 @@ def main():
             logger.info(f"Generating {args.games_per_batch} games (batch {batch_count + 1})...")
             games = selfplay_worker.generate_batch(args.games_per_batch)
             positions_count = len(games)
+
+            # Save to local cache if enabled
+            if position_cache is not None:
+                cache_file = position_cache.save_batch(
+                    games,
+                    metadata={
+                        'worker_id': args.worker_id,
+                        'batch': batch_count + 1,
+                        'games': args.games_per_batch,
+                    }
+                )
+                logger.info(f"Cached to: {os.path.basename(cache_file)}")
 
             # Push to queue
             queue.push_games(games)
