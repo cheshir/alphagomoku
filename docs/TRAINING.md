@@ -10,10 +10,14 @@ Complete guide to training strong Gomoku AI models using AlphaZero-style reinfor
 2. [Training Philosophy](#training-philosophy)
 3. [Architecture](#architecture)
 4. [Training Pipeline](#training-pipeline)
+   - [Phase 3: Data Augmentation](#phase-3-data-augmentation-automatic)
 5. [Performance Expectations](#performance-expectations)
 6. [Troubleshooting](#troubleshooting)
 7. [Cloud Training](#cloud-training)
 8. [Distributed Training](#distributed-training)
+
+**Additional Documentation:**
+- [Symmetry Augmentation Details](SYMMETRY_AUGMENTATION.md) - Complete guide to 8-fold symmetry augmentation
 
 ---
 
@@ -384,6 +388,50 @@ CUDA (T4, 4 workers parallel):
 
 8. **GPU-accelerated legal move generation** - Kernel launch overhead cancels gains
 9. **Moving tree traversal to GPU** - Fundamentally incompatible with GPU architecture
+
+### Phase 3: Data Augmentation (Automatic)
+
+**Purpose**: Multiply training data through board symmetries
+
+AlphaGomoku automatically applies **8-fold symmetry augmentation** during training to improve generalization without increasing storage requirements. This is a key technique used by AlphaGo/AlphaZero.
+
+#### How It Works
+
+Every Gomoku board has 8 symmetries (dihedral group D4):
+- 1 identity (no change)
+- 3 rotations (90°, 180°, 270° clockwise)
+- 4 reflections (vertical, horizontal, main diagonal, anti-diagonal)
+
+**During training**, each position is randomly augmented:
+```python
+# When sampling a training batch
+for position in batch:
+    sym_id = random.choice(0-7)  # Pick random symmetry
+    state_aug = apply_symmetry(state, sym_id)
+    policy_aug = apply_symmetry(policy, sym_id)
+    # Train on augmented position
+```
+
+**During self-play**, positions are stored in **original orientation only** (no augmentation). This is critical - MCTS must operate on consistent board state.
+
+#### Benefits
+
+- **8× effective training data** without storing 8 copies
+- **Faster convergence** - network learns rotation-invariant features
+- **Better generalization** - reduces overfitting to specific orientations
+- **Memory efficient** - lazy augmentation applies symmetry on-demand
+
+#### Implementation
+
+Symmetry augmentation is **enabled by default** in `DataBuffer`:
+```python
+# Automatic in training pipeline
+data_buffer = DataBuffer(db_path, lazy_augmentation=True)  # Default
+```
+
+The system ensures **consistency** - when augmenting a position, the state tensor, policy target, and last_move coordinates are all transformed with the same symmetry.
+
+See [SYMMETRY_AUGMENTATION.md](SYMMETRY_AUGMENTATION.md) for detailed documentation.
 
 ---
 

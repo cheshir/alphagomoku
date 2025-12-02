@@ -45,15 +45,15 @@ def print_status(queue: RedisQueue, start_time: float, prev_stats: dict) -> dict
 
     # Calculate rates
     elapsed = time.time() - start_time
-    games_pushed_rate = 0
-    games_pulled_rate = 0
+    positions_pushed_rate = 0
+    positions_pulled_rate = 0
 
     if prev_stats:
         time_delta = 5.0  # Refresh interval
-        games_pushed_delta = stats['games_pushed'] - prev_stats['games_pushed']
-        games_pulled_delta = stats['games_pulled'] - prev_stats['games_pulled']
-        games_pushed_rate = (games_pushed_delta / time_delta) * 3600  # per hour
-        games_pulled_rate = (games_pulled_delta / time_delta) * 3600  # per hour
+        positions_pushed_delta = stats['games_pushed'] - prev_stats['games_pushed']
+        positions_pulled_delta = stats['games_pulled'] - prev_stats['games_pulled']
+        positions_pushed_rate = (positions_pushed_delta / time_delta) * 3600  # per hour
+        positions_pulled_rate = (positions_pulled_delta / time_delta) * 3600  # per hour
 
     # Print header
     print("=" * 70)
@@ -94,24 +94,24 @@ def print_status(queue: RedisQueue, start_time: float, prev_stats: dict) -> dict
     print("─" * 70)
     print("  STATISTICS")
     print("─" * 70)
-    print(f"  Games Pushed:  {format_number(stats['games_pushed'])} "
-          f"({games_pushed_rate:.1f}/hour)")
-    print(f"  Games Pulled:  {format_number(stats['games_pulled'])} "
-          f"({games_pulled_rate:.1f}/hour)")
+    print(f"  Positions Pushed:  {format_number(stats['games_pushed'])} "
+          f"({positions_pushed_rate:.1f}/hour)")
+    print(f"  Positions Pulled:  {format_number(stats['games_pulled'])} "
+          f"({positions_pulled_rate:.1f}/hour)")
     print(f"  Models Pushed: {format_number(stats['models_pushed'])}")
     print(f"  Models Pulled: {format_number(stats['models_pulled'])}")
     print()
 
     # Training progress estimate
-    games_in_queue = stats['games_pushed'] - stats['games_pulled']
+    positions_in_queue = stats['games_pushed'] - stats['games_pulled']
     if stats['games_pulled'] > 0:
         training_efficiency = (stats['games_pulled'] / stats['games_pushed']) * 100
         print("─" * 70)
         print("  TRAINING PROGRESS")
         print("─" * 70)
-        print(f"  Games Processed:  {format_number(stats['games_pulled'])} / "
+        print(f"  Positions Processed:  {format_number(stats['games_pulled'])} / "
               f"{format_number(stats['games_pushed'])} ({training_efficiency:.1f}%)")
-        print(f"  Games Pending:    {format_number(games_in_queue)}")
+        print(f"  Positions Pending:    {format_number(positions_in_queue)}")
         print()
 
     # Footer

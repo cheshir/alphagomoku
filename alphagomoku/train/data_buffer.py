@@ -7,6 +7,7 @@ import lmdb
 import numpy as np
 
 from ..selfplay.selfplay import SelfPlayData
+from ..utils.symmetry import BoardSymmetry
 
 
 class DataBuffer:
@@ -132,73 +133,70 @@ class DataBuffer:
             raise RuntimeError(f"Failed to resize LMDB map: {e}") from e
 
     def _augment_example(self, example: SelfPlayData) -> List[SelfPlayData]:
-        """Apply 8-fold symmetry augmentation"""
-        augmented = []
-        state = example.state
-        size = state.shape[-1]  # Board size from state shape
-        policy = example.policy.reshape(size, size)
+        """Apply 8-fold symmetry augmentation.
 
+        Uses the robust BoardSymmetry implementation to generate all 8 symmetries.
+        """
+        augmented = []
         current_player, last_move, metadata = self._extract_context(example)
 
-        for i in range(4):  # 4 rotations
-            # Rotate state (all 5 channels)
-            rot_state = np.rot90(state, i, axes=(1, 2))
-            rot_policy = np.rot90(policy, i)
-            augmented.append(
-                SelfPlayData(
-                    state=rot_state,
-                    policy=rot_policy.flatten(),
+        for sym_id in range(8):
+            state_sym, policy_sym, value_sym, last_move_sym, player_sym, meta_sym = \
+                BoardSymmetry.apply_symmetry(
+                    state=example.state,
+                    policy=example.policy,
                     value=example.value,
-                    current_player=current_player,
+                    sym_id=sym_id,
                     last_move=last_move,
-                    metadata=dict(metadata),
+                    current_player=current_player,
+                    metadata=metadata
                 )
-            )
-
-            # Flip horizontally
-            flip_state = np.flip(rot_state, axis=2)
-            flip_policy = np.flip(rot_policy, axis=1)
 
             augmented.append(
                 SelfPlayData(
-                    state=flip_state,
-                    policy=flip_policy.flatten(),
-                    value=example.value,
-                    current_player=current_player,
-                    last_move=last_move,
-                    metadata=dict(metadata),
+                    state=state_sym,
+                    policy=policy_sym,
+                    value=value_sym,
+                    current_player=player_sym,
+                    last_move=last_move_sym,
+                    metadata=meta_sym,
                 )
             )
 
         return augmented
 
     def _apply_single_augmentation(self, example: SelfPlayData, aug_idx: int) -> SelfPlayData:
-        """Apply a single augmentation transformation (0-7) to reduce memory usage"""
-        state = example.state
-        size = state.shape[-1]  # Board size from state shape
-        policy = example.policy.reshape(size, size)
+        """Apply a single augmentation transformation (0-7) to reduce memory usage.
 
-        # Apply specific augmentation
-        rot_count = aug_idx // 2
-        flip = bool(aug_idx % 2)
+        Uses the robust BoardSymmetry implementation for correct transformations.
 
-        # Rotate
-        aug_state = np.rot90(state, rot_count, axes=(1, 2))
-        aug_policy = np.rot90(policy, rot_count)
+        Args:
+            example: Training example to augment
+            aug_idx: Symmetry ID (0-7)
 
-        # Flip if needed
-        if flip:
-            aug_state = np.flip(aug_state, axis=2)
-            aug_policy = np.flip(aug_policy, axis=1)
-
+        Returns:
+            Augmented training example
+        """
         current_player, last_move, metadata = self._extract_context(example)
+
+        state_sym, policy_sym, value_sym, last_move_sym, player_sym, meta_sym = \
+            BoardSymmetry.apply_symmetry(
+                state=example.state,
+                policy=example.policy,
+                value=example.value,
+                sym_id=aug_idx,
+                last_move=last_move,
+                current_player=current_player,
+                metadata=metadata
+            )
+
         return SelfPlayData(
-            state=aug_state,
-            policy=aug_policy.flatten(),
-            value=example.value,
-            current_player=current_player,
-            last_move=last_move,
-            metadata=dict(metadata),
+            state=state_sym,
+            policy=policy_sym,
+            value=value_sym,
+            current_player=player_sym,
+            last_move=last_move_sym,
+            metadata=meta_sym,
         )
 
     @staticmethod

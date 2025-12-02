@@ -6,7 +6,8 @@ A strong Gomoku (15×15) AI implementation using AlphaZero methodology with self
 
 - **Goal**: Build a competitive Gomoku AI that can beat experienced human players
 - **Architecture**: DW-ResNet-SE + MCTS + Threat-Space Search + Endgame Solver
-- **Training**: Optimized for fast iteration with evaluation tracking
+- **Training**: AlphaZero-style self-play with 8-fold symmetry augmentation
+- **Data Augmentation**: Automatic board symmetries (rotations + reflections) for 8× effective training data
 - **UI**: Modern Vue 3 web application with FastAPI backend
 - **Deployment**: Docker + Docker Compose for easy setup
 - **Board Size**: 15×15 (classic Gomoku rules)
@@ -324,6 +325,7 @@ pytest tests/unit/test_model.py -v
 - [docs/CLOUD_VM_RECOMMENDATIONS.md](docs/CLOUD_VM_RECOMMENDATIONS.md) - Cloud GPU recommendations and cost analysis
 
 ### Features & Architecture
+- [docs/SYMMETRY_AUGMENTATION.md](docs/SYMMETRY_AUGMENTATION.md) - **⭐ 8-fold symmetry augmentation** (rotations + reflections for training)
 - [docs/TSS.md](docs/TSS.md) - Threat Space Search (when to use, configuration, usage)
 - [docs/OPENING_STRATEGY.md](docs/OPENING_STRATEGY.md) - Opening book strategy
 - [docs/FORCED_WINS_VERIFIED.md](docs/FORCED_WINS_VERIFIED.md) - Endgame solver verification

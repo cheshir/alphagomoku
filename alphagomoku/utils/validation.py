@@ -94,7 +94,7 @@ def validate_training_config(
     lr: float,
     min_lr: float,
     publish_frequency: int,
-    min_games_for_training: int,
+    min_batches_for_training: int,
     games_per_training_batch: int
 ) -> List[str]:
     """Validate training worker configuration.
@@ -104,7 +104,7 @@ def validate_training_config(
         lr: Learning rate
         min_lr: Minimum learning rate
         publish_frequency: How often to publish model
-        min_games_for_training: Minimum games before training
+        min_batches_for_training: Minimum games before training
         games_per_training_batch: Games to pull per training iteration
 
     Returns:
@@ -144,9 +144,9 @@ def validate_training_config(
         )
 
     # Validate min games for training
-    if min_games_for_training < 1 or min_games_for_training > 1000:
+    if min_batches_for_training < 1 or min_batches_for_training > 1000:
         errors.append(
-            f"❌ Invalid min games for training: {min_games_for_training}\n"
+            f"❌ Invalid min games for training: {min_batches_for_training}\n"
             f"   Must be between 1 and 1000\n"
             f"   Recommended: 50 (wait for 50+ games before training)"
         )

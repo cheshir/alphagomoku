@@ -91,7 +91,7 @@ def main():
         args.lr,
         args.min_lr,
         args.publish_frequency,
-        args.min_games_for_training,
+        args.min_batches_for_training,
         args.games_per_training_batch
     ))
 
@@ -156,10 +156,10 @@ def main():
             stats = queue.get_stats()
             queue_size = stats['queue_size']
 
-            if queue_size < args.min_games_for_training:
+            if queue_size < args.min_batches_for_training:
                 logger.info(
                     f"Queue has {queue_size} batches "
-                    f"(need {args.min_games_for_training}). Waiting..."
+                    f"(need {args.min_batches_for_training}). Waiting..."
                 )
                 time.sleep(10)
                 continue

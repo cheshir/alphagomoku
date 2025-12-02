@@ -1,14 +1,19 @@
 #!/usr/bin/env python3
-"""Distributed self-play manager - manages multiple workers in a single process.
+"""Distributed self-play manager - manages multiple workers as separate processes.
 
-This script spawns multiple self-play workers as threads using a producer-consumer
-pattern with version-based model updates.
+Uses multiprocessing (not threading) to bypass Python's GIL and achieve true
+parallel execution across all CPU cores.
 
 Architecture:
-- Worker threads: Generate individual games and push to local queue
-- Accumulator thread: Pulls games from local queue, batches them, pushes to Redis
-- Model updater thread: Checks Redis for new models, saves them with version numbers
-- Workers check version number and update their models independently
+- Worker processes: Generate games independently (bypasses GIL!)
+- Accumulator thread: Batches games and pushes to Redis
+- Model updater thread: Downloads models from Redis
+- Dashboard thread: Displays real-time statistics
+
+Key design:
+- Worker PROCESSES (not threads) -> each has own Python interpreter
+- Shared memory using multiprocessing.Manager()
+- True parallel execution: 8 workers = ~800% CPU (8 cores fully utilized)
 """
 
 import argparse
@@ -17,7 +22,7 @@ import os
 import sys
 import time
 import threading
-import queue
+import multiprocessing as mp
 from pathlib import Path
 from typing import Dict
 from dataclasses import dataclass
@@ -30,7 +35,7 @@ sys.path.insert(0, str(project_root))
 
 from alphagomoku.model.network import GomokuNet
 from alphagomoku.selfplay.selfplay import SelfPlayWorker
-from alphagomoku.queue import RedisQueue
+from alphagomoku.queue import PositionQueue
 from alphagomoku.utils.validation import (
     validate_redis_url,
     validate_selfplay_config,
@@ -38,20 +43,158 @@ from alphagomoku.utils.validation import (
 )
 
 
-@dataclass
-class WorkerStats:
-    """Statistics for a single worker."""
-    worker_id: str
-    games_generated: int = 0
-    positions_generated: int = 0
-    errors: int = 0
-    last_game_time: float = 0.0
-    model_version: int = 0
-    status: str = "initializing"  # initializing, generating, updating_model, idle, error, stopped
+def worker_process(
+    worker_id: int,
+    model_preset: str,
+    mcts_simulations: int,
+    device: str,
+    mcts_batch_size: int,  # RENAMED: NN inference batch size for MCTS
+    checkpoint_dir: str,
+    game_queue,  # Shared queue
+    worker_stats_dict,  # Shared dict
+    stats_lock,  # Shared lock
+    current_version_value,  # Shared value
+    running_value,  # Shared value
+    log_file: str
+):
+    """Worker process that generates games (runs in separate process, bypasses GIL!).
+
+    Args:
+        mcts_batch_size: Neural network batch size for MCTS evaluations (not game count!)
+    """
+    # Setup logging
+    logger = logging.getLogger(f"worker-{worker_id}")
+    logger.setLevel(logging.INFO)
+    handler = logging.FileHandler(log_file, mode='a')
+    handler.setFormatter(logging.Formatter(
+        f'%(asctime)s - [Worker-{worker_id}] - %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S'
+    ))
+    logger.addHandler(handler)
+    logger.propagate = False
+
+    worker_name = f"worker-{worker_id}"
+
+    # Initialize stats
+    with stats_lock:
+        worker_stats_dict[worker_name] = {
+            'worker_id': worker_name,
+            'games_generated': 0,
+            'positions_generated': 0,
+            'total_time': 0.0,
+            'status': 'initializing',
+            'model_version': -1,
+            'errors': 0
+        }
+
+    # Create model
+    worker_model = GomokuNet.from_preset(model_preset, board_size=15, device=device)
+    worker_model_version = -1
+
+    # Create self-play worker
+    selfplay_worker = SelfPlayWorker(
+        model=worker_model,
+        mcts_simulations=mcts_simulations,
+        adaptive_sims=False,
+        batch_size=mcts_batch_size,  # NN batch size for MCTS
+        difficulty='easy',
+        disable_tqdm=True,
+    )
+
+    logger.info("Worker initialized, waiting for model...")
+
+    # Wait for initial model with timeout
+    model_wait_start = time.time()
+    model_loaded = False
+
+    try:
+        while running_value.value:
+            # Check for model updates
+            current_version = current_version_value.value
+
+            if current_version > worker_model_version:
+                checkpoint_path = os.path.join(checkpoint_dir, f'model_v{current_version}.pt')
+
+                # Update status based on whether this is initial load or update
+                with stats_lock:
+                    stats = dict(worker_stats_dict[worker_name])
+                    if worker_model_version == -1:
+                        stats['status'] = 'waiting_for_model'
+                    else:
+                        stats['status'] = 'updating_model'
+                    worker_stats_dict[worker_name] = stats
+
+                try:
+                    checkpoint = torch.load(checkpoint_path, map_location=device)
+                    worker_model.load_state_dict(checkpoint['model_state'])
+                    worker_model_version = current_version
+                    model_loaded = True
+
+                    with stats_lock:
+                        stats = dict(worker_stats_dict[worker_name])
+                        stats['model_version'] = worker_model_version
+                        stats['status'] = 'ready'
+                        worker_stats_dict[worker_name] = stats
+
+                    logger.info(f"Updated to v{worker_model_version}")
+                except FileNotFoundError:
+                    # Check timeout for initial model load
+                    if worker_model_version == -1:
+                        wait_time = time.time() - model_wait_start
+                        if wait_time > 60:  # 60 second timeout
+                            raise TimeoutError(f"Model file not found after {wait_time:.1f}s: {checkpoint_path}")
+                    time.sleep(0.1)
+                    continue
+                except Exception as e:
+                    logger.error(f"Failed to load model: {e}")
+                    with stats_lock:
+                        stats = dict(worker_stats_dict[worker_name])
+                        stats['errors'] += 1
+                        stats['status'] = 'error'
+                        worker_stats_dict[worker_name] = stats
+                    time.sleep(1)
+                    continue
+
+            # Skip game generation if model not loaded yet
+            if not model_loaded:
+                time.sleep(0.1)
+                continue
+
+            # Generate game
+            game_start = time.time()
+
+            with stats_lock:
+                stats = dict(worker_stats_dict[worker_name])
+                stats['status'] = 'generating'
+                worker_stats_dict[worker_name] = stats
+
+            game_positions = selfplay_worker.generate_batch(1)
+            game_time = time.time() - game_start
+
+            # Push to queue
+            game_queue.put(game_positions)
+
+            # Update stats (must reassign entire dict for Manager.dict to sync)
+            with stats_lock:
+                stats = dict(worker_stats_dict[worker_name])  # Copy
+                stats['games_generated'] += 1
+                stats['positions_generated'] += len(game_positions)
+                stats['total_time'] += game_time
+                stats['status'] = 'idle'
+                worker_stats_dict[worker_name] = stats  # Reassign
+
+    except Exception as e:
+        logger.error(f"Worker crashed: {e}", exc_info=True)
+        with stats_lock:
+            stats = dict(worker_stats_dict[worker_name])
+            stats['status'] = 'error'
+            stats['errors'] += 1
+            worker_stats_dict[worker_name] = stats
+        print(f"\n❌ Worker {worker_id} crashed: {e}\nCheck: {log_file}\n", flush=True)
 
 
-class SelfPlayManager:
-    """Manages multiple self-play workers with unified statistics."""
+class DistributedSelfPlayManager:
+    """Manager that coordinates multiple self-play worker PROCESSES."""
 
     def __init__(
         self,
@@ -60,122 +203,179 @@ class SelfPlayManager:
         model_preset: str,
         mcts_simulations: int,
         device: str,
-        batch_size: int,
+        positions_per_push: int,  # How many positions to batch before pushing to Redis
         model_update_frequency: int,
-        batch_size_mcts: int,
+        mcts_batch_size: int,  # NN inference batch size
         checkpoint_dir: str
     ):
+        """Initialize distributed self-play manager.
+
+        Args:
+            positions_per_push: How many positions to accumulate before pushing to Redis
+            mcts_batch_size: Neural network batch size for MCTS evaluations
+        """
         self.num_workers = num_workers
         self.redis_url = redis_url
         self.model_preset = model_preset
         self.mcts_simulations = mcts_simulations
         self.device = device
-        self.batch_size = batch_size  # Games per Redis push
+        self.positions_per_push = positions_per_push
         self.model_update_frequency = model_update_frequency
-        self.batch_size_mcts = batch_size_mcts
+        self.mcts_batch_size = mcts_batch_size
         self.checkpoint_dir = checkpoint_dir
 
-        # Version-based model synchronization
-        self.current_model_version = 0
-        self.version_lock = threading.Lock()
+        # Multiprocessing manager for shared state
+        self.manager = mp.Manager()
 
-        # Producer-consumer queue for games
-        self.game_queue = queue.Queue()
+        # Shared state (accessible across processes)
+        self.current_model_version = self.manager.Value('i', 0)
+        self.version_lock = self.manager.Lock()
+        self.game_queue = self.manager.Queue()
+        self.worker_stats_dict = self.manager.dict()
+        self.stats_lock = self.manager.Lock()
+        self.batches_pushed = self.manager.Value('i', 0)
+        self.total_positions_pushed = self.manager.Value('i', 0)
+        self.last_batch_time = self.manager.Value('d', 0.0)  # Timestamp of last Redis push
+        self.accumulated_positions = self.manager.Value('i', 0)  # Positions in current batch
+        self.running = self.manager.Value('b', False)
 
-        # Signal for model updater
+        # Thread-only state
         self.check_model_event = threading.Event()
-
-        # Statistics
-        self.worker_stats: Dict[str, WorkerStats] = {}
-        self.stats_lock = threading.Lock()
-        self.batches_pushed = 0
-        self.total_positions_pushed = 0
         self.start_time = None
-        self.running = False
 
-        # Redis queue
+        # Redis
         self.queue = None
 
-        # Setup logging to file only (no console spam during dashboard updates)
+        # Logging - recreate log file on each start
         log_file = os.path.join(checkpoint_dir, 'selfplay_manager.log')
         self.log_file = log_file
 
-        # Create file handler
-        file_handler = logging.FileHandler(log_file, mode='a')
+        # Clear old log file
+        if os.path.exists(log_file):
+            os.remove(log_file)
+
+        file_handler = logging.FileHandler(log_file, mode='w')
         file_handler.setLevel(logging.INFO)
         file_handler.setFormatter(logging.Formatter(
             '%(asctime)s - [%(levelname)s] - %(message)s',
             datefmt='%Y-%m-%d %H:%M:%S'
         ))
 
-        # Create logger
         self.logger = logging.getLogger(__name__)
         self.logger.setLevel(logging.INFO)
         self.logger.addHandler(file_handler)
-        self.logger.propagate = False  # Don't propagate to root logger
+        self.logger.propagate = False
 
     def setup(self):
-        """Initialize shared resources."""
-        self.logger.info("=" * 70)
-        self.logger.info("Distributed Self-Play Manager Starting")
-        self.logger.info("=" * 70)
-        self.logger.info(f"Log file: {self.log_file}")
-        self.logger.info(f"Number of workers: {self.num_workers}")
-        self.logger.info(f"Model preset: {self.model_preset}")
-        self.logger.info(f"MCTS simulations: {self.mcts_simulations}")
-        self.logger.info(f"MCTS batch size: {self.batch_size_mcts}")
-        self.logger.info(f"Device: {self.device}")
-        self.logger.info(f"Batch size: {self.batch_size} games")
-        self.logger.info(f"Checkpoint directory: {self.checkpoint_dir}")
-
-        # Create checkpoint directory
+        """Initialize Redis and model."""
         os.makedirs(self.checkpoint_dir, exist_ok=True)
 
-        # Connect to Redis
-        try:
-            self.queue = RedisQueue(redis_url=self.redis_url)
-            self.logger.info("✓ Connected to Redis successfully")
-        except Exception as e:
-            self.logger.error(f"❌ Failed to connect to Redis: {e}")
-            raise
+        # Connect to Redis via PositionQueue abstraction
+        self.queue = PositionQueue(self.redis_url)
+        self.logger.info(f"✓ Connected to Redis")
 
-        # Initialize model version 0 (random initialization or load from disk)
-        self._initialize_model_v0()
-
-        self.logger.info("=" * 70)
-
-    def _initialize_model_v0(self):
-        """Initialize version 0 model."""
-        # Check if we have any checkpoints
-        checkpoint_files = sorted(
-            [f for f in os.listdir(self.checkpoint_dir) if f.startswith('model_v') and f.endswith('.pt')]
-        )
-
-        if checkpoint_files:
-            # Load latest checkpoint
-            latest_checkpoint = checkpoint_files[-1]
-            checkpoint_path = os.path.join(self.checkpoint_dir, latest_checkpoint)
+        # Check for existing checkpoint
+        import glob
+        checkpoints = glob.glob(os.path.join(self.checkpoint_dir, 'model_v*.pt'))
+        if checkpoints:
+            latest_checkpoint = max(checkpoints, key=os.path.getctime)
             try:
-                checkpoint = torch.load(checkpoint_path, map_location=self.device)
+                checkpoint = torch.load(latest_checkpoint, map_location='cpu')
                 version = checkpoint.get('iteration', 0)
-
                 with self.version_lock:
-                    self.current_model_version = version
-
-                self.logger.info(f"✓ Found existing checkpoint: {latest_checkpoint} (v{version})")
+                    self.current_model_version.value = version
+                self.logger.info(f"✓ Found checkpoint: {latest_checkpoint} (v{version})")
                 return
             except Exception as e:
-                self.logger.warning(f"Failed to load checkpoint {latest_checkpoint}: {e}")
+                self.logger.warning(f"Failed to load checkpoint: {e}")
 
-        # No checkpoints found, try Redis
-        self.logger.info("Checking for trained model in Redis queue...")
+        # Check Redis
+        self.logger.info("Checking Redis for trained model...")
         model_data = self.queue.pull_model(timeout=0)
 
         if model_data:
             try:
                 iteration = model_data['metadata'].get('iteration', 0)
                 checkpoint_path = os.path.join(self.checkpoint_dir, f'model_v{iteration}.pt')
+                torch.save({
+                    'model_state': model_data['model_state'],
+                    'iteration': iteration,
+                    'metadata': model_data['metadata']
+                }, checkpoint_path)
+                with self.version_lock:
+                    self.current_model_version.value = iteration
+                self.logger.info(f"✓ Downloaded model from Redis (v{iteration})")
+                return
+            except Exception as e:
+                self.logger.warning(f"Failed to save model from Redis: {e}")
 
+        # Create random model
+        self.logger.info("No trained model found, creating random initialization...")
+        model = GomokuNet.from_preset(self.model_preset, board_size=15, device='cpu')
+        checkpoint_path = os.path.join(self.checkpoint_dir, 'model_v0.pt')
+        torch.save({
+            'model_state': model.state_dict(),
+            'iteration': 0,
+            'metadata': {'note': 'Random initialization'}
+        }, checkpoint_path)
+        with self.version_lock:
+            self.current_model_version.value = 0
+        self.logger.info(f"✓ Created model v0: {model.get_model_size():,} parameters")
+
+    def accumulator_thread(self):
+        """Accumulator thread (batches positions and pushes to Redis)."""
+        batch = []
+
+        while self.running.value:
+            try:
+                game_positions = self.game_queue.get(timeout=1)
+                batch.extend(game_positions)
+                self.accumulated_positions.value = len(batch)  # Update counter
+
+                if len(batch) >= self.positions_per_push:
+                    self.queue.push_positions(batch)
+                    self.logger.info(f"Pushed batch: {len(batch)} positions")
+                    self.batches_pushed.value += 1
+                    self.total_positions_pushed.value += len(batch)
+                    self.last_batch_time.value = time.time()
+                    self.check_model_event.set()
+                    batch = []
+                    self.accumulated_positions.value = 0  # Reset counter
+
+            except Exception:
+                pass
+
+        # Push remaining
+        if batch:
+            self.queue.push_positions(batch)
+            self.logger.info(f"Pushed final batch: {len(batch)} positions")
+            self.accumulated_positions.value = 0  # Reset counter
+
+    def model_updater_thread(self):
+        """Model updater thread (downloads models from Redis)."""
+        updates_since_check = 0
+
+        while self.running.value:
+            self.check_model_event.wait(timeout=10)
+            self.check_model_event.clear()
+
+            updates_since_check += 1
+            if updates_since_check < self.model_update_frequency:
+                continue
+
+            updates_since_check = 0
+
+            try:
+                model_data = self.queue.pull_model(timeout=1)
+                if not model_data:
+                    continue
+
+                iteration = model_data['metadata'].get('iteration', 0)
+
+                if iteration <= self.current_model_version.value:
+                    continue
+
+                checkpoint_path = os.path.join(self.checkpoint_dir, f'model_v{iteration}.pt')
                 torch.save({
                     'model_state': model_data['model_state'],
                     'iteration': iteration,
@@ -183,402 +383,322 @@ class SelfPlayManager:
                 }, checkpoint_path)
 
                 with self.version_lock:
-                    self.current_model_version = iteration
+                    self.current_model_version.value = iteration
 
-                self.logger.info(f"✓ Loaded model from Redis (v{iteration})")
-                return
+                self.logger.info(f"✓ Updated to model v{iteration}")
+
             except Exception as e:
-                self.logger.warning(f"Failed to load model from Redis: {e}")
+                self.logger.error(f"Model update failed: {e}")
 
-        # Create initial random model (v0)
-        self.logger.info("No trained model found. Creating v0 with random initialization.")
-        model = GomokuNet.from_preset(self.model_preset, board_size=15, device=self.device)
-        checkpoint_path = os.path.join(self.checkpoint_dir, 'model_v0.pt')
+    def _format_duration(self, seconds: float) -> str:
+        """Format duration in seconds to human-readable string."""
+        if seconds < 60:
+            return f"{int(seconds)}s ago"
+        elif seconds < 3600:
+            mins = int(seconds / 60)
+            return f"{mins}m ago"
+        else:
+            hours = int(seconds / 3600)
+            mins = int((seconds % 3600) / 60)
+            return f"{hours}h {mins}m ago"
 
-        torch.save({
-            'model_state': model.state_dict(),
-            'iteration': 0,
-            'metadata': {'note': 'Random initialization'}
-        }, checkpoint_path)
+    def _format_eta(self, minutes: int) -> str:
+        """Format ETA in minutes to human-readable string."""
+        if minutes < 1:
+            return "< 1 min"
+        elif minutes < 60:
+            return f"~{minutes} min"
+        else:
+            hours = minutes // 60
+            mins = minutes % 60
+            return f"~{hours}h {mins}m"
 
-        with self.version_lock:
-            self.current_model_version = 0
+    def _get_runtime_string(self) -> str:
+        """Get formatted runtime string."""
+        elapsed = time.time() - self.start_time if self.start_time else 0
+        hours = int(elapsed // 3600)
+        minutes = int((elapsed % 3600) // 60)
+        seconds = int(elapsed % 60)
+        return f"{hours:02d}:{minutes:02d}:{seconds:02d}", elapsed
 
-        self.logger.info(f"✓ Created model v0: {model.get_model_size():,} parameters")
+    def _build_header(self) -> list:
+        """Build dashboard header section."""
+        lines = []
+        lines.append("=" * 80)
+        lines.append("  AlphaGomoku Distributed Self-Play (MULTIPROCESS)")
+        lines.append("=" * 80)
 
-    def worker_thread(self, worker_id: int):
-        """Worker thread that generates games (producer)."""
-        worker_name = f"worker-{worker_id}"
+        runtime_str, _ = self._get_runtime_string()
+        lines.append(f"\n⏱  Runtime: {runtime_str}  |  Model: v{self.current_model_version.value}")
+        return lines
 
-        # Initialize worker stats
-        with self.stats_lock:
-            self.worker_stats[worker_name] = WorkerStats(worker_id=worker_name)
+    def _build_local_queue_stats(self) -> tuple:
+        """Build local queue statistics section."""
+        lines = []
+        games_in_queue = self.game_queue.qsize() if hasattr(self.game_queue, 'qsize') else 0
+        lines.append(f"\n📦 Local Queue: {games_in_queue} games (unbatched)")
+        return lines, games_in_queue
 
-        # Create worker's own model
-        worker_model = GomokuNet.from_preset(self.model_preset, board_size=15, device=self.device)
-        worker_model_version = -1  # Force initial load
-
-        # Create self-play worker
-        selfplay_worker = SelfPlayWorker(
-            model=worker_model,
-            mcts_simulations=self.mcts_simulations,
-            adaptive_sims=False,
-            batch_size=self.batch_size_mcts,
-            difficulty='easy',
-            disable_tqdm=True,  # Disable progress bars to avoid interfering with dashboard
-        )
+    def _build_redis_stats(self) -> list:
+        """Build Redis statistics section."""
+        lines = []
+        lines.append(f"\n📊 Redis Stats:")
 
         try:
-            while self.running:
-                # Check for model updates (lock-free read)
-                current_version = self.current_model_version
+            redis_stats = self.queue.get_stats()
+            redis_queue_size = redis_stats['queue_size']
+            positions_in_redis = redis_stats['positions_pushed'] - redis_stats['positions_pulled']
 
-                if current_version > worker_model_version:
-                    with self.stats_lock:
-                        self.worker_stats[worker_name].status = "updating_model"
+            lines.append(f"   Queue: {redis_queue_size} batches ({positions_in_redis:,} positions waiting)")
+            lines.append(f"   Batches pushed: {self.batches_pushed.value}")
+            lines.append(f"   Total positions pushed: {self.total_positions_pushed.value:,}")
+            lines.append(f"   Positions pulled by trainer: {redis_stats['positions_pulled']:,}")
+        except Exception:
+            # Fallback if Redis query fails
+            lines.append(f"   Batches pushed: {self.batches_pushed.value}")
+            lines.append(f"   Total positions pushed: {self.total_positions_pushed.value:,}")
 
-                    checkpoint_path = os.path.join(
-                        self.checkpoint_dir,
-                        f'model_v{current_version}.pt'
-                    )
+        return lines
 
-                    try:
-                        checkpoint = torch.load(checkpoint_path, map_location=self.device)
-                        worker_model.load_state_dict(checkpoint['model_state'])
-                        worker_model_version = current_version
-
-                        with self.stats_lock:
-                            self.worker_stats[worker_name].model_version = worker_model_version
-
-                        self.logger.info(f"Worker {worker_id} updated to v{worker_model_version}")
-                    except FileNotFoundError:
-                        # File not ready yet, will retry next iteration
-                        self.logger.debug(f"Worker {worker_id}: Model v{current_version} not found yet, retrying...")
-                        time.sleep(0.1)
-                        continue
-                    except Exception as e:
-                        self.logger.error(f"Worker {worker_id} failed to load model v{current_version}: {e}")
-                        with self.stats_lock:
-                            self.worker_stats[worker_name].errors += 1
-                        time.sleep(1)
-                        continue
-
-                # Generate single game
-                game_start = time.time()
-
-                with self.stats_lock:
-                    self.worker_stats[worker_name].status = "generating"
-
-                game_positions = selfplay_worker.generate_batch(1)  # Returns list of positions from 1 game
-                game_time = time.time() - game_start
-
-                # Push all positions from this game to local queue (fast, no network)
-                self.game_queue.put(game_positions)
-
-                # Update statistics
-                with self.stats_lock:
-                    stats = self.worker_stats[worker_name]
-                    stats.games_generated += 1
-                    stats.positions_generated += len(game_positions)
-                    stats.last_game_time = game_time
-                    stats.status = "idle"
-
-        except Exception as e:
-            error_msg = f"Worker {worker_id} crashed: {e}"
-            self.logger.error(error_msg, exc_info=True)
-            with self.stats_lock:
-                self.worker_stats[worker_name].status = "error"
-                self.worker_stats[worker_name].errors += 1
-            # Log to console as well
-            print(f"\n❌ {error_msg}\nCheck log file: {self.log_file}\n", flush=True)
-
-    def accumulator_thread(self):
-        """Accumulator thread that batches games and pushes to Redis (consumer)."""
-        batch = []
-        games_in_batch = 0
-
-        while self.running:
-            try:
-                # Pull from local queue with timeout
-                game_positions = self.game_queue.get(timeout=1)
-                batch.extend(game_positions)
-                games_in_batch += 1
-
-                # Push batch when we have enough games
-                if games_in_batch >= self.batch_size:
-                    self.queue.push_games(batch)
-
-                    with self.stats_lock:
-                        self.batches_pushed += 1
-                        self.total_positions_pushed += len(batch)
-
-                    self.logger.info(f"Pushed batch of {len(batch)} positions ({games_in_batch} games) to Redis (batch #{self.batches_pushed})")
-                    batch = []
-                    games_in_batch = 0
-
-                    # Signal model updater every N batches
-                    if self.batches_pushed % self.model_update_frequency == 0:
-                        self.check_model_event.set()
-
-            except queue.Empty:
-                continue
-
-        # Push remaining games on shutdown
-        if batch:
-            self.queue.push_games(batch)
-            self.logger.info(f"Pushed final batch of {len(batch)} positions ({games_in_batch} games)")
-
-    def model_updater_thread(self):
-        """Model updater thread that checks Redis for new models."""
-        while self.running:
-            # Wait for signal from accumulator (with timeout)
-            self.check_model_event.wait(timeout=60)
-            self.check_model_event.clear()
-
-            # Check Redis for new model
-            model_data = self.queue.pull_model(timeout=0)
-
-            if model_data:
-                try:
-                    iteration = model_data['metadata'].get('iteration', 0)
-                    checkpoint_path = os.path.join(
-                        self.checkpoint_dir,
-                        f'model_v{iteration}.pt'
-                    )
-
-                    # Save checkpoint to disk
-                    torch.save({
-                        'model_state': model_data['model_state'],
-                        'iteration': iteration,
-                        'metadata': model_data['metadata']
-                    }, checkpoint_path)
-
-                    # Update version (atomic write with lock)
-                    with self.version_lock:
-                        self.current_model_version = iteration
-
-                    self.logger.info(f"📥 Model updated to v{iteration}")
-
-                except Exception as e:
-                    self.logger.error(f"Failed to update model: {e}", exc_info=True)
-
-    def print_stats(self):
-        """Print combined statistics using cursor positioning (no flickering)."""
-        # Build output in memory first, then print once
+    def _build_worker_stats(self):
+        """Build worker statistics section."""
         lines = []
+        lines.append(f"\n👷 Workers ({self.num_workers} processes):")
 
-        lines.append("=" * 80)
-        lines.append("  AlphaGomoku Distributed Self-Play - Live Statistics")
-        lines.append("=" * 80)
-        lines.append("")
-
-        # Calculate totals
         total_games = 0
         total_positions = 0
-        total_errors = 0
+        status_counts = {}
 
         with self.stats_lock:
-            lines.append(f"{'Worker':<12} {'Status':<15} {'Ver':<5} {'Games':<8} {'Positions':<10} {'Last Game':<12} {'Errors':<6}")
-            lines.append("-" * 80)
+            for worker_name in sorted(self.worker_stats_dict.keys()):
+                stats = self.worker_stats_dict[worker_name]
+                games = stats['games_generated']
+                positions = stats['positions_generated']
+                total_time = stats['total_time']
+                status = stats['status']
+                version = stats['model_version']
+                errors = stats['errors']
 
-            for worker_name in sorted(self.worker_stats.keys()):
-                stats = self.worker_stats[worker_name]
-                total_games += stats.games_generated
-                total_positions += stats.positions_generated
-                total_errors += stats.errors
+                status_counts[status] = status_counts.get(status, 0) + 1
+                total_games += games
+                total_positions += positions
 
-                # Status emoji
-                status_emoji = {
-                    'initializing': '🔄',
-                    'generating': '⚙️ ',
-                    'idle': '✓',
-                    'updating_model': '📥',
-                    'error': '❌',
-                    'stopped': '⏹️ '
-                }.get(stats.status, '?')
+                avg_time = total_time / games if games > 0 else 0
+                lines.append(
+                    f"   {worker_name}: {games} games, {positions} pos, "
+                    f"v{version}, {avg_time:.1f}s/game, {status}, errors:{errors}"
+                )
 
-                lines.append(f"{worker_name:<12} {status_emoji} {stats.status:<13} "
-                            f"v{stats.model_version:<4} {stats.games_generated:<8} {stats.positions_generated:<10} "
-                            f"{stats.last_game_time:>6.1f}s      "
-                            f"{stats.errors:<6}")
+        return lines, total_games, total_positions, status_counts
 
-            lines.append("-" * 80)
+    def _build_summary_stats(self, total_games: int, total_positions: int, status_counts: dict) -> list:
+        """Build summary statistics section."""
+        lines = []
+        lines.append(f"\n📈 Summary:")
+        lines.append(f"   Total games: {total_games:,}")
+        lines.append(f"   Total positions: {total_positions:,}")
 
-            # Calculate rates
-            elapsed = time.time() - self.start_time if self.start_time else 1
-            games_per_hour = (total_games / elapsed) * 3600
-            positions_per_hour = (total_positions / elapsed) * 3600
+        if total_games > 0:
+            lines.append(f"   Avg positions/game: {total_positions / total_games:.1f}")
+        else:
+            lines.append("   Avg positions/game: N/A")
 
-            lines.append("")
-            lines.append(f"{'TOTAL':<12} {'':<15} {'':<5} {total_games:<8} {total_positions:<10}")
-            lines.append("")
-            lines.append(f"Runtime:          {elapsed / 3600:.2f} hours")
-            lines.append(f"Games/hour:       {games_per_hour:.1f}")
-            lines.append(f"Positions/hour:   {positions_per_hour:.1f}")
-            lines.append(f"Batches pushed:   {self.batches_pushed}")
-            lines.append(f"Current model:    v{self.current_model_version}")
-            lines.append(f"Local queue size: {self.game_queue.qsize()} games")
-            lines.append(f"Total errors:     {total_errors}")
-            lines.append("")
+        status_str = ", ".join([f"{status}: {count}" for status, count in sorted(status_counts.items())])
+        lines.append(f"   Worker status: {status_str}")
 
-            # Queue stats
-            try:
-                queue_stats = self.queue.get_stats()
-                lines.append(f"Redis queue:      {queue_stats['queue_size']} batches")
-                lines.append(f"Games pushed:     {queue_stats['games_pushed']}")
-                lines.append(f"Games pulled:     {queue_stats['games_pulled']}")
-            except:
-                pass
+        return lines
 
-        lines.append("")
+    def _build_throughput_stats(self, elapsed: float, total_games: int, total_positions: int, games_in_queue: int) -> list:
+        """Build throughput and prediction statistics section."""
+        lines = []
+
+        if elapsed <= 0 or total_games <= 0:
+            return lines
+
+        games_per_hour = (total_games / elapsed) * 3600
+        positions_per_hour = (total_positions / elapsed) * 3600
+        lines.append(f"   Throughput: {games_per_hour:.1f} games/hour, {positions_per_hour:,.0f} positions/hour")
+
+        # Get actual accumulated positions from accumulator thread
+        accumulated_positions = self.accumulated_positions.value
+        positions_until_next_batch = max(0, self.positions_per_push - accumulated_positions)
+
+        # Next batch ETA
+        if positions_per_hour > 0:
+            hours_until_batch = positions_until_next_batch / positions_per_hour
+            minutes_until_batch = int(hours_until_batch * 60)
+            eta_str = self._format_eta(minutes_until_batch)
+            lines.append(f"   Next batch: {accumulated_positions}/{self.positions_per_push} positions ready, ETA {eta_str}")
+        else:
+            lines.append(f"   Next batch: {accumulated_positions}/{self.positions_per_push} positions ready")
+
+        # Time since last batch
+        if self.last_batch_time.value > 0:
+            time_since_last = time.time() - self.last_batch_time.value
+            time_str = self._format_duration(time_since_last)
+            lines.append(f"   Last batch pushed: {time_str}")
+
+        return lines
+
+    def _build_footer(self) -> list:
+        """Build dashboard footer section."""
+        lines = []
+        lines.append(f"\n💾 Log file: {self.log_file}")
+        lines.append(f"⌨  Press Ctrl+C to stop")
         lines.append("=" * 80)
-        lines.append(f"Log file: {self.log_file}")
-        lines.append("Press Ctrl+C to stop all workers")
-        lines.append("=" * 80)
+        return lines
 
-        # Clear screen and print all at once (reduces flickering)
-        # Use home position without clearing to preserve any error messages above
+    def print_stats(self):
+        """Print dashboard (flicker-free)."""
+        lines = []
+
+        # Build all sections
+        lines.extend(self._build_header())
+
+        local_queue_lines, games_in_queue = self._build_local_queue_stats()
+        lines.extend(local_queue_lines)
+
+        lines.extend(self._build_redis_stats())
+
+        worker_lines, total_games, total_positions, status_counts = self._build_worker_stats()
+        lines.extend(worker_lines)
+
+        lines.extend(self._build_summary_stats(total_games, total_positions, status_counts))
+
+        _, elapsed = self._get_runtime_string()
+        lines.extend(self._build_throughput_stats(elapsed, total_games, total_positions, games_in_queue))
+
+        lines.extend(self._build_footer())
+
+        # Single atomic print
         output = "\n".join(lines)
-
-        # Move cursor to home and clear from cursor to end of screen
         print("\033[H\033[J" + output, flush=True)
 
     def run(self):
-        """Run the manager with all workers."""
+        """Run the manager."""
         self.setup()
 
-        # Print startup info to console (before dashboard takes over)
+        # Startup info
         print("\n" + "=" * 70)
-        print("  AlphaGomoku Distributed Self-Play Manager")
+        print("  AlphaGomoku Distributed Self-Play Manager (MULTIPROCESS)")
         print("=" * 70)
         print(f"✓ Log file: {self.log_file}")
-        print(f"✓ Workers: {self.num_workers}")
+        print(f"✓ Workers: {self.num_workers} PROCESSES (bypasses GIL!)")
         print(f"✓ Device: {self.device}")
-        print(f"✓ MCTS batch size: {self.batch_size_mcts}")
+        print(f"✓ NN batch size (MCTS inference): {self.mcts_batch_size}")
+        print(f"✓ Expected CPU usage: ~{self.num_workers * 100}%")
         print("\nStarting dashboard in 2 seconds...")
-        print("(Logs will be written to file only)")
         print("=" * 70)
         time.sleep(2)
 
-        # Clear screen before starting dashboard
         print("\033[2J\033[H", flush=True)
 
-        # Start statistics printer thread
-        def stats_printer():
-            while self.running:
-                self.print_stats()
-                time.sleep(5)  # Update every 5 seconds
-
-        stats_thread = threading.Thread(target=stats_printer, daemon=True)
-
-        # Start accumulator thread
+        # Start threads
+        stats_thread = threading.Thread(
+            target=lambda: (time.sleep(0), [self.print_stats() or time.sleep(5) for _ in iter(lambda: self.running.value, False)]),
+            daemon=True
+        )
         accumulator = threading.Thread(target=self.accumulator_thread, daemon=True)
-
-        # Start model updater thread
         updater = threading.Thread(target=self.model_updater_thread, daemon=True)
 
-        # Start all worker threads
-        worker_threads = []
-        self.running = True
+        # Start worker PROCESSES
+        worker_processes = []
+        self.running.value = True
         self.start_time = time.time()
 
-        self.logger.info(f"Starting {self.num_workers} worker threads...")
+        self.logger.info(f"Starting {self.num_workers} worker PROCESSES...")
 
         for i in range(1, self.num_workers + 1):
-            thread = threading.Thread(target=self.worker_thread, args=(i,), daemon=True)
-            thread.start()
-            worker_threads.append(thread)
+            process = mp.Process(
+                target=worker_process,
+                args=(
+                    i,
+                    self.model_preset,
+                    self.mcts_simulations,
+                    self.device,
+                    self.mcts_batch_size,
+                    self.checkpoint_dir,
+                    self.game_queue,
+                    self.worker_stats_dict,
+                    self.stats_lock,
+                    self.current_model_version,
+                    self.running,
+                    self.log_file
+                )
+            )
+            process.start()
+            worker_processes.append(process)
 
-        # Start supporting threads
+        # Start threads
+        stats_thread.start()
         accumulator.start()
         updater.start()
-        stats_thread.start()
 
-        # Wait for interrupt
+        self.logger.info("All workers and threads started")
+
         try:
-            while True:
-                time.sleep(1)
+            # Keep main thread alive
+            for process in worker_processes:
+                process.join()
         except KeyboardInterrupt:
-            self.logger.info("\n\nStopping all workers...")
-            self.running = False
+            print("\n\n🛑 Stopping...")
+            self.running.value = False
 
-            # Wait for threads to finish (with timeout)
-            for thread in worker_threads:
-                thread.join(timeout=2)
+            for process in worker_processes:
+                process.join(timeout=5)
+                if process.is_alive():
+                    process.terminate()
 
-            # Print final statistics
-            self.print_stats()
-            print("\n✓ All workers stopped")
+            print("✓ Stopped")
 
 
 def main():
-    parser = argparse.ArgumentParser(description='Distributed self-play manager')
-    parser.add_argument('--redis-url', type=str, required=True,
-                        help='Redis connection URL (redis://:password@host:port/db)')
-    parser.add_argument('--num-workers', type=int, default=6,
-                        help='Number of parallel workers')
-    parser.add_argument('--model-preset', type=str, choices=['small', 'medium', 'large'],
-                        default='medium', help='Model preset to use')
-    parser.add_argument('--mcts-simulations', type=int, default=50,
-                        help='MCTS simulations per move')
-    parser.add_argument('--device', type=str, choices=['cpu', 'mps', 'cuda'],
-                        default='cpu', help='Device to use')
-    parser.add_argument('--batch-size', type=int, default=10,
-                        help='Games per batch to push to Redis')
-    parser.add_argument('--model-update-frequency', type=int, default=10,
-                        help='Check for new model every N batches pushed')
-    parser.add_argument('--batch-size-mcts', type=int, default=32,
-                        help='MCTS batch size for neural network evaluation')
-    parser.add_argument('--checkpoint-dir', type=str, default='./checkpoints',
-                        help='Directory to save/load model checkpoints locally')
+    parser = argparse.ArgumentParser(
+        description="Distributed self-play manager (MULTIPROCESS)",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Parameter Guide:
+  --positions-per-push  How many positions to accumulate before pushing to Redis
+                        (Default: 500 positions = ~10 games per Redis push)
+                        This is what the GPU trainer will consume!
+
+  --mcts-batch-size     Neural network batch size for MCTS inference
+                        Higher = faster MCTS, more VRAM
+                        (Default: 128 positions per NN forward pass)
+"""
+    )
+    parser.add_argument('--redis-url', type=str, required=True, help='Redis connection URL')
+    parser.add_argument('--num-workers', type=int, default=4, help='Number of worker processes')
+    parser.add_argument('--model-preset', type=str, default='small', choices=['small', 'medium', 'large'])
+    parser.add_argument('--mcts-simulations', type=int, default=100, help='MCTS simulations per move')
+    parser.add_argument('--device', type=str, default='cpu', choices=['cpu', 'cuda', 'mps'])
+    parser.add_argument('--positions-per-push', type=int, default=500,
+                        help='Positions to accumulate before pushing to Redis')
+    parser.add_argument('--model-update-frequency', type=int, default=5,
+                        help='Check for new model every N Redis pushes')
+    parser.add_argument('--mcts-batch-size', type=int, default=128,
+                        help='NN inference batch size for MCTS')
+    parser.add_argument('--checkpoint-dir', type=str, default='./checkpoints')
 
     args = parser.parse_args()
 
-    # Validate arguments
-    validation_errors = []
+    # Set multiprocessing start method to 'spawn' (required for CUDA/MPS compatibility)
+    mp.set_start_method('spawn', force=True)
 
-    # Validate Redis URL
-    validation_errors.extend(validate_redis_url(args.redis_url))
-
-    # Validate self-play configuration
-    validation_errors.extend(validate_selfplay_config(
-        args.mcts_simulations,
-        args.batch_size_mcts,
-        args.batch_size,
-        args.model_update_frequency
-    ))
-
-    # Validate number of workers
-    if args.num_workers < 1 or args.num_workers > 16:
-        validation_errors.append(
-            f"❌ Invalid number of workers: {args.num_workers}\n"
-            f"   Must be between 1 and 16\n"
-            f"   Recommended: 4-8 for CPU, 1 for MPS"
-        )
-
-    # Print validation errors and exit if any
-    if validation_errors:
-        logger = logging.getLogger(__name__)
-        print_validation_errors(validation_errors, logger)
-        return 1
-
-    # Create and run manager
-    manager = SelfPlayManager(
+    manager = DistributedSelfPlayManager(
         num_workers=args.num_workers,
         redis_url=args.redis_url,
         model_preset=args.model_preset,
         mcts_simulations=args.mcts_simulations,
         device=args.device,
-        batch_size=args.batch_size,
+        positions_per_push=args.positions_per_push,
         model_update_frequency=args.model_update_frequency,
-        batch_size_mcts=args.batch_size_mcts,
+        mcts_batch_size=args.mcts_batch_size,
         checkpoint_dir=args.checkpoint_dir
     )
 
     manager.run()
 
-    return 0
 
-
-if __name__ == '__main__':
-    sys.exit(main())
+if __name__ == "__main__":
+    main()

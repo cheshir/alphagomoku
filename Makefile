@@ -329,6 +329,8 @@ help:
 	@echo "  make distributed-selfplay-mps-worker  - Start 1 MPS self-play worker"
 	@echo "  make distributed-training-gpu         - Start GPU training worker"
 	@echo "  make distributed-monitor              - Monitor queue status"
+	@echo "  make distributed-migrate-queue        - Migrate old queue data (dry-run)"
+	@echo "  make distributed-migrate-queue-apply  - Apply queue migration"
 	@echo ""
 	@echo "📖 For more info: see README.md or WHATS_NEW.md"
 
@@ -337,31 +339,20 @@ help:
 # =============================================================================
 
 # Distributed Self-Play Workers (CPU) - Run on Mac M1 Pro
+# Uses separate PROCESSES (not threads) for TRUE parallel execution
+# Bypasses Python's GIL - Expected CPU usage: ~600% with 6 workers
+# Batches 500 positions (~10 games) before pushing to Redis
 distributed-selfplay-cpu-workers:
 	OMP_NUM_THREADS=1 \
 	python scripts/distributed_selfplay_manager.py \
 		--redis-url "$$REDIS_URL" \
-		--num-workers 6 \
-		--model-preset medium \
-		--mcts-simulations 50 \
-		--device cpu \
-		--batch-size 10 \
-		--model-update-frequency 10 \
-		--batch-size-mcts 128
-
-# Distributed Self-Play Worker (MPS) - Run on Mac M1 Pro with Apple Silicon acceleration
-distributed-selfplay-mps-worker:
-	PYTORCH_ENABLE_MPS_FALLBACK=0 \
-	OMP_NUM_THREADS=1 \
-	python scripts/distributed_selfplay_manager.py \
-		--redis-url "$$REDIS_URL" \
-		--num-workers 1 \
+		--num-workers 8 \
 		--model-preset medium \
 		--mcts-simulations 100 \
-		--device mps \
-		--batch-size 10 \
+		--device cpu \
+		--positions-per-push 1000 \
 		--model-update-frequency 10 \
-		--batch-size-mcts 64
+		--mcts-batch-size 128
 
 # Distributed Training Worker (GPU) - Run on Colab T4
 distributed-training-gpu:
@@ -386,6 +377,17 @@ distributed-monitor:
 		--redis-url "$$REDIS_URL" \
 		--refresh 5
 
+# Migrate Redis queue from old format to new position-based format
+distributed-migrate-queue:
+	@echo "🔍 Running migration in DRY RUN mode first..."
+	@echo ""
+	python scripts/migrate_redis_queue.py \
+		--redis-url "$$REDIS_URL" \
+		--positions-per-batch 1000 \
+		--dry-run
+	@echo ""
+	@echo "To apply migration, run: make distributed-migrate-queue-apply"
+
 # =============================================================================
 # Distributed Training - Combined Commands
 # =============================================================================
@@ -394,7 +396,7 @@ distributed-help:
 	@echo "Distributed Training Setup for AlphaGomoku"
 	@echo ""
 	@echo "Architecture (Producer-Consumer Pattern):"
-	@echo "  Worker Threads → Local Queue → Accumulator → Redis → Training Worker"
+	@echo "  Worker Processes → Local Queue → Accumulator → Redis → Training Worker"
 	@echo "  Model Updater → Checkpoints (version-based sync)"
 	@echo ""
 	@echo "Setup Steps:"
@@ -402,33 +404,34 @@ distributed-help:
 	@echo "  2. Set REDIS_URL in .env file:"
 	@echo "     REDIS_URL=redis://:password@queue.cheshir.me:6379/0"
 	@echo "  3. Start self-play workers on Mac:"
-	@echo "     make distributed-selfplay-cpu-workers  # 6 CPU workers (unified manager)"
+	@echo "     make distributed-selfplay-cpu-workers  # 8 CPU workers (multiprocess)"
 	@echo "     OR"
-	@echo "     make distributed-selfplay-mps-worker   # 1 MPS worker (unified manager)"
+	@echo "     make distributed-selfplay-mps-worker   # 1 MPS worker (multiprocess)"
 	@echo "  4. Start training worker on Colab:"
 	@echo "     make distributed-training-gpu"
 	@echo "  5. Monitor queue status:"
 	@echo "     make distributed-monitor"
 	@echo ""
 	@echo "Commands:"
-	@echo "  make distributed-selfplay-cpu-workers  - Start unified manager with 6 CPU workers"
-	@echo "  make distributed-selfplay-mps-worker   - Start unified manager with 1 MPS worker"
+	@echo "  make distributed-selfplay-cpu-workers  - Start 8 CPU worker processes (bypasses GIL)"
+	@echo "  make distributed-selfplay-mps-worker   - Start 1 MPS worker process"
 	@echo "  make distributed-training-gpu          - Start GPU training worker"
 	@echo "  make distributed-monitor               - Monitor queue status"
 	@echo ""
-	@echo "New Architecture Benefits:"
+	@echo "Architecture Benefits:"
+	@echo "  ✓ Multiprocessing: Each worker is a separate process (bypasses Python's GIL!)"
+	@echo "  ✓ True parallelism: 8 workers = ~800% CPU (8 cores fully utilized)"
 	@echo "  ✓ Producer-consumer pattern for efficient batching"
-	@echo "  ✓ Workers generate games independently (no coordination overhead)"
-	@echo "  ✓ Accumulator batches games from all workers for Redis"
 	@echo "  ✓ Version-based model sync (lock-free, eventual consistency)"
 	@echo "  ✓ Unified dashboard with live statistics"
 	@echo "  ✓ Each worker has own model copy (no race conditions)"
 	@echo ""
 	@echo "Resource Allocation:"
-	@echo "  Mac M1 Pro (6 CPU workers):"
+	@echo "  Mac M1 Pro (8 CPU worker processes):"
 	@echo "    - Medium model, 50 MCTS sims"
-	@echo "    - ~2-3 min/game, ~20-30 games/hour/worker"
-	@echo "    - Total: 120-180 games/hour"
+	@echo "    - Each worker: separate process with own interpreter"
+	@echo "    - Expected: ~800% CPU usage (8 cores @ 100%)"
+	@echo "    - 2-4x faster than threaded version"
 	@echo ""
 	@echo "  Colab T4 GPU (1 training worker):"
 	@echo "    - Medium model, batch 1024"

@@ -219,8 +219,8 @@ def main():
             stats = queue.get_stats()
             logger.info(
                 f"Queue: {stats['queue_size']} batches, "
-                f"{stats['games_pushed']} games pushed, "
-                f"{stats['games_pulled']} games pulled"
+                f"{stats['games_pushed']} positions pushed, "
+                f"{stats['games_pulled']} positions pulled"
             )
 
             # Update model periodically

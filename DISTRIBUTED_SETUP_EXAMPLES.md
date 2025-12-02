@@ -258,8 +258,8 @@ import os
 queue = RedisQueue(os.environ['REDIS_URL'])
 stats = queue.get_stats()
 print(f"Queue size: {stats['queue_size']}")
-print(f"Games pushed: {stats['games_pushed']}")
-print(f"Games pulled: {stats['games_pulled']}")
+print(f"Positions pushed: {stats['games_pushed']}")  # Note: counts positions, not games
+print(f"Positions pulled: {stats['games_pulled']}")  # Note: counts positions, not games
 
 workers = queue.get_active_workers()
 print(f"Self-play workers: {workers['selfplay']}")

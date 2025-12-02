@@ -163,9 +163,9 @@ redis.lpop("games:queue")  # FIFO retrieval
 redis.set("latest_model", pickle.dumps(model_state))
 redis.get("latest_model")
 
-# Statistics
-redis.incr("stats:games_pushed")
-redis.incr("stats:games_pulled")
+# Statistics (note: these count positions, not games)
+redis.incr("stats:games_pushed")  # Actually counts positions
+redis.incr("stats:games_pulled")  # Actually counts positions
 
 # Worker heartbeat
 redis.setex(f"worker:{worker_id}", 60, timestamp)
@@ -442,7 +442,7 @@ redis-cli -u $REDIS_URL get latest_model | wc -c
 
 # Edit CONFIG in train_universal.ipynb:
 batch_size = 2048  # increase
-min_games_for_training = 100  # increase
+min_batches_for_training = 100  # increase
 ```
 
 ---
