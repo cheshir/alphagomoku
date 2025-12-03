@@ -202,8 +202,8 @@ def main():
         try:
             logger.info(f"Found checkpoint: {latest_checkpoint}")
             checkpoint = trainer.load_checkpoint(latest_checkpoint)
-            training_iteration = checkpoint.get('iteration', 0)
-            total_positions_trained = checkpoint.get('total_positions', 0)
+            training_iteration = checkpoint.iteration
+            total_positions_trained = checkpoint.total_positions
             logger.info(f"✓ Resumed from iteration {training_iteration}")
             logger.info(f"✓ Total positions trained so far: {total_positions_trained}")
         except Exception as e:
