@@ -11,6 +11,7 @@ from ..model.network import GomokuNet
 from ..selfplay.selfplay import SelfPlayData
 from .data_buffer import DataBuffer
 from .schedulers import WarmupCosineScheduler
+from .checkpoint import Checkpoint
 
 
 class Trainer:
@@ -218,23 +219,37 @@ class Trainer:
 
         return {}
 
-    def save_checkpoint(self, path: str, epoch: int, metrics: Dict[str, float]):
-        """Save training checkpoint"""
-        checkpoint = {
-            "model_state_dict": self.model.state_dict(),
-            "optimizer_state_dict": self.optimizer.state_dict(),
-            "scheduler_state_dict": self.scheduler.state_dict(),
-            "epoch": epoch,
-            "step": self.step,
-            "metrics": metrics,
-        }
-        torch.save(checkpoint, path)
+    def save_checkpoint(self, path: str, epoch: int, metrics: Dict[str, float], total_positions: int = 0):
+        """Save training checkpoint using unified Checkpoint class.
 
-    def load_checkpoint(self, path: str) -> Dict:
-        """Load training checkpoint"""
-        checkpoint = torch.load(path, map_location=self.device, weights_only=False)
-        self.model.load_state_dict(checkpoint["model_state_dict"])
-        self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
-        self.scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
-        self.step = checkpoint["step"]
+        Args:
+            path: Path to save checkpoint
+            epoch: Training epoch number
+            metrics: Training metrics dictionary
+            total_positions: Total number of positions trained on (optional)
+        """
+        checkpoint = Checkpoint.from_training_state(
+            model=self.model,
+            iteration=epoch,
+            total_positions=total_positions,
+            metrics=metrics,
+            optimizer=self.optimizer,
+            scheduler=self.scheduler,
+            step=self.step
+        )
+        checkpoint.save(path)
+
+    def load_checkpoint(self, path: str) -> Checkpoint:
+        """Load training checkpoint using unified Checkpoint class.
+
+        Returns:
+            Checkpoint object with all saved fields
+        """
+        checkpoint = Checkpoint.load(path, device=self.device)
+        checkpoint.restore_all(
+            model=self.model,
+            optimizer=self.optimizer,
+            scheduler=self.scheduler
+        )
+        self.step = checkpoint.step if checkpoint.step is not None else 0
         return checkpoint

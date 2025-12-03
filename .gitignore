@@ -84,3 +84,6 @@ debug.log
 .mplconfig/
 project.txt
 training_report.png
+/.claude/
+/.amazonq/
+/node_modules/

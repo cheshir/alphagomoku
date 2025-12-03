@@ -36,6 +36,7 @@ sys.path.insert(0, str(project_root))
 from alphagomoku.model.network import GomokuNet
 from alphagomoku.selfplay.selfplay import SelfPlayWorker
 from alphagomoku.queue import PositionQueue
+from alphagomoku.train.checkpoint import Checkpoint
 from alphagomoku.utils.validation import (
     validate_redis_url,
     validate_selfplay_config,
@@ -336,8 +337,12 @@ class DistributedSelfPlayManager:
         self.logger.info(f"✓ Created model v0: {model.get_model_size():,} parameters")
 
     def accumulator_thread(self):
-        """Accumulator thread (batches positions and pushes to Redis)."""
+        """Accumulator thread (batches positions and pushes to Redis).
+
+        Retries indefinitely with exponential backoff (max 80s) - never discards positions.
+        """
         batch = []
+        consecutive_failures = 0
 
         while self.running.value:
             try:
@@ -346,22 +351,66 @@ class DistributedSelfPlayManager:
                 self.accumulated_positions.value = len(batch)  # Update counter
 
                 if len(batch) >= self.positions_per_push:
-                    self.queue.push_positions(batch)
-                    self.logger.info(f"Pushed batch: {len(batch)} positions")
-                    self.batches_pushed.value += 1
-                    self.total_positions_pushed.value += len(batch)
-                    self.last_batch_time.value = time.time()
-                    self.check_model_event.set()
-                    batch = []
-                    self.accumulated_positions.value = 0  # Reset counter
+                    # Try to push with infinite retry (never discard)
+                    retry_count = 0
+                    pushed = False
 
-            except Exception:
-                pass
+                    while not pushed and self.running.value:
+                        try:
+                            self.queue.push_positions(batch)
+                            self.logger.info(f"Pushed batch: {len(batch)} positions")
+                            self.batches_pushed.value += 1
+                            self.total_positions_pushed.value += len(batch)
+                            self.last_batch_time.value = time.time()
+                            self.check_model_event.set()
+                            batch = []
+                            self.accumulated_positions.value = 0  # Reset counter
+                            consecutive_failures = 0  # Reset failure counter on success
+                            pushed = True
+                        except Exception as e:
+                            retry_count += 1
+                            consecutive_failures += 1
+                            self.logger.error(f"Failed to push batch (attempt {retry_count}): {e}")
 
-        # Push remaining
+                            # Exponential backoff: 5s, 10s, 20s, 40s, 80s (max)
+                            wait_time = min(5 * (2 ** (retry_count - 1)), 80)
+                            self.logger.info(f"Retrying in {wait_time}s... (will keep retrying until successful)")
+                            time.sleep(wait_time)
+
+                            # Try to reconnect Redis
+                            try:
+                                self.logger.info("Attempting to reconnect to Redis...")
+                                self.queue = PositionQueue(redis_url=self.redis_url)
+                                self.logger.info("✓ Reconnected to Redis")
+                            except Exception as reconnect_error:
+                                self.logger.error(f"Reconnection failed: {reconnect_error}")
+
+            except Exception as e:
+                # Only log if it's not a timeout (normal during queue.get)
+                if "timed out" not in str(e).lower():
+                    self.logger.error(f"Accumulator error: {e}")
+
+        # Push remaining with infinite retry
         if batch:
-            self.queue.push_positions(batch)
-            self.logger.info(f"Pushed final batch: {len(batch)} positions")
+            retry_count = 0
+            while self.running.value:
+                try:
+                    self.queue.push_positions(batch)
+                    self.logger.info(f"Pushed final batch: {len(batch)} positions")
+                    break
+                except Exception as e:
+                    retry_count += 1
+                    self.logger.error(f"Failed to push final batch (attempt {retry_count}): {e}")
+                    wait_time = min(5 * (2 ** (retry_count - 1)), 80)
+                    self.logger.info(f"Retrying in {wait_time}s...")
+                    time.sleep(wait_time)
+
+                    # Try reconnection
+                    try:
+                        self.queue = PositionQueue(redis_url=self.redis_url)
+                        self.logger.info("✓ Reconnected to Redis")
+                    except Exception as reconnect_error:
+                        self.logger.error(f"Reconnection failed: {reconnect_error}")
             self.accumulated_positions.value = 0  # Reset counter
 
     def model_updater_thread(self):
@@ -426,6 +475,14 @@ class DistributedSelfPlayManager:
 
             except Exception as e:
                 self.logger.error(f"Model update failed: {e}")
+                # Try to reconnect on next iteration
+                try:
+                    self.logger.info("Will attempt Redis reconnection on next check...")
+                    time.sleep(5)
+                    self.queue = PositionQueue(redis_url=self.redis_url)
+                    self.logger.info("✓ Reconnected to Redis")
+                except Exception as reconnect_error:
+                    self.logger.error(f"Reconnection failed: {reconnect_error}")
 
     def _format_duration(self, seconds: float) -> str:
         """Format duration in seconds to human-readable string."""

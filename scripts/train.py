@@ -377,27 +377,7 @@ def main():
         print(f"   Parameters: {model.get_model_size():,}")
         print(f"   Blocks: {hw_config['num_blocks']}, Channels: {hw_config['channels']}")
         print(f"   Gradient checkpointing: {'✓ Enabled' if hw_config['use_checkpoint'] else '✗ Disabled'}")
-
-    # Auto-configure batch size if not specified by user
-    if args.batch_size == 512:  # Default value
-        # Get optimal batch size based on device and model size
-        if device == 'cuda' and torch.cuda.is_available():
-            gpu_memory_gb = torch.cuda.get_device_properties(0).total_memory / 1024**3
-            model_size = model.get_model_size()
-
-            if model_size < 2_000_000:  # Small model
-                args.batch_size = 1024 if gpu_memory_gb >= 16 else 512
-            elif model_size < 4_000_000:  # Medium model
-                args.batch_size = 512 if gpu_memory_gb >= 16 else 256
-            else:  # Large model
-                args.batch_size = 512 if gpu_memory_gb >= 24 else 256
-        elif device == 'mps':
-            model_size = model.get_model_size()
-            args.batch_size = 512 if model_size < 2_000_000 else 256
-
-        print(f"   Auto-configured batch size: {args.batch_size}")
-    else:
-        print(f"   Using user-specified batch size: {args.batch_size}")
+        print(f"   Using batch size: {args.batch_size}")
 
     # Determine effective LR schedule
     effective_lr_schedule = args.lr_schedule
@@ -463,8 +443,9 @@ def main():
     print(f"   ℹ️  Use 'medium' or 'strong' for inference/evaluation, not training")
     
     start_epoch = 0
+    total_positions = 0  # Track cumulative positions trained
     training_history = {'loss': [], 'policy_acc': [], 'value_mae': [], 'epoch_times': []}
-    
+
     if args.resume:
         if args.resume == 'auto':
             # Find latest checkpoint
@@ -479,8 +460,9 @@ def main():
         
         if args.resume:
             checkpoint = trainer.load_checkpoint(args.resume)
-            start_epoch = checkpoint['epoch'] + 1
-            print(f"Resumed from epoch {start_epoch}")
+            start_epoch = checkpoint.iteration + 1
+            total_positions = checkpoint.total_positions
+            print(f"Resumed from epoch {start_epoch}, total positions: {total_positions:,}")
     
     # Training loop
     epoch_pbar = tqdm(
@@ -570,6 +552,7 @@ def main():
         try:
             data_buffer.add_data(selfplay_data)
             selfplay_time = time.time() - selfplay_start
+            total_positions += len(selfplay_data)  # Track cumulative positions
             epoch_pbar.set_postfix({
                 'positions': len(selfplay_data),
                 'buffer': f"{len(data_buffer):,}",
@@ -603,7 +586,7 @@ def main():
         
         # Save checkpoint every epoch
         checkpoint_path = os.path.join(args.checkpoint_dir, f'model_epoch_{epoch}.pt')
-        trainer.save_checkpoint(checkpoint_path, epoch, metrics)
+        trainer.save_checkpoint(checkpoint_path, epoch, metrics, total_positions)
         
         epoch_time = time.time() - epoch_start
         
@@ -640,7 +623,7 @@ def main():
     
     # Save final model
     final_path = os.path.join(args.checkpoint_dir, 'model_final.pt')
-    trainer.save_checkpoint(final_path, args.epochs - 1, metrics)
+    trainer.save_checkpoint(final_path, args.epochs - 1, metrics, total_positions)
 
     # Generate final report
     _generate_final_report(training_history, args, final_path, effective_lr_schedule, model)

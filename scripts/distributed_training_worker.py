@@ -27,6 +27,7 @@ sys.path.insert(0, str(project_root))
 
 from alphagomoku.model.network import GomokuNet
 from alphagomoku.train.trainer import Trainer
+from alphagomoku.train.checkpoint import Checkpoint
 from alphagomoku.queue import RedisQueue
 from alphagomoku.utils.validation import (
     validate_redis_url,
@@ -318,16 +319,16 @@ def main():
                         args.checkpoint_dir,
                         f'model_iteration_{training_iteration}.pt'
                     )
-                    checkpoint = {
-                        "model_state_dict": model.state_dict(),
-                        "optimizer_state_dict": trainer.optimizer.state_dict(),
-                        "scheduler_state_dict": trainer.scheduler.state_dict(),
-                        "iteration": training_iteration,
-                        "total_positions": total_positions_trained,
-                        "step": trainer.step,
-                        "metrics": metrics if metrics else {},
-                    }
-                    torch.save(checkpoint, checkpoint_path)
+                    checkpoint = Checkpoint.from_training_state(
+                        model=model,
+                        iteration=training_iteration,
+                        total_positions=total_positions_trained,
+                        metrics=metrics,
+                        optimizer=trainer.optimizer,
+                        scheduler=trainer.scheduler,
+                        step=trainer.step
+                    )
+                    checkpoint.save(checkpoint_path)
                     logger.info(f"Checkpoint saved: {checkpoint_path}")
 
                 except Exception as e:
@@ -353,16 +354,16 @@ def main():
         # Save final model with full state
         logger.info("Saving final model...")
         checkpoint_path = os.path.join(args.checkpoint_dir, 'model_final.pt')
-        checkpoint = {
-            "model_state_dict": model.state_dict(),
-            "optimizer_state_dict": trainer.optimizer.state_dict(),
-            "scheduler_state_dict": trainer.scheduler.state_dict(),
-            "iteration": training_iteration,
-            "total_positions": total_positions_trained,
-            "step": trainer.step,
-            "metrics": metrics if 'metrics' in locals() else {},
-        }
-        torch.save(checkpoint, checkpoint_path)
+        checkpoint = Checkpoint.from_training_state(
+            model=model,
+            iteration=training_iteration,
+            total_positions=total_positions_trained,
+            metrics=metrics if 'metrics' in locals() else {},
+            optimizer=trainer.optimizer,
+            scheduler=trainer.scheduler,
+            step=trainer.step
+        )
+        checkpoint.save(checkpoint_path)
         logger.info(f"Final checkpoint saved: {checkpoint_path}")
 
         logger.info("=" * 60)
